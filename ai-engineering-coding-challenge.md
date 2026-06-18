@@ -4,7 +4,7 @@
 
 Design, build, and package a multi-tool AI agent that can assist our engineers by answering questions about different Electronic Control Unit (ECU) specifications. The agent must be able to intelligently select the appropriate documentation to consult based on the user's query.
 
-This challenge will assess your ability to design and implement robust RAG and agentic workflows, and to package a solution for production on Databricks using MLOps best practices.
+This challenge will assess your ability to design and implement robust RAG and agentic workflows using MLOps best practices.
 
 ## Scenario
 
@@ -17,10 +17,9 @@ The goal is to build an agent that, when asked a question like *"What is the max
 * **Language:** Python
 * **Core Logic:** LangChain & LangGraph
 * **Vector Storage:** An in-memory vector store (e.g., FAISS, ChromaDB)
-* **Models & Environment:** You will be provided access to our LLM and Embedding models on a Databricks workspace
-* **Packaging & Deployment:** The final solution must be packaged using **Databricks Asset Bundles (DABs)** and the agent logged to **MLflow**
+* **Models:** Use any publicly available LLM and Embedding models (e.g., OpenAI, Anthropic, local models via Ollama)
+* **Packaging:** The agent should be logged to **MLflow** for model versioning and tracking
 * **Strategy:** Adhere to "everything-as-code" and "python-package-first" principles. The final solution should not be a monolithic notebook, but a proper installable python package
-* **ME ECU Engineering Platform:** You have access to our [BIOS repository](https://github.boschdevcloud.com/bios-eco-mde/ai-platform/) and [Documentation](https://pages.github.boschdevcloud.com/bios-eco-mde/ai-platform/) with examples, templates, and patterns
 
 ---
 
@@ -50,15 +49,16 @@ This challenge uses a **tiered evaluation approach** that allows you to demonstr
 *Production readiness - distinguishes senior from mid-level candidates*
 
 **Requirements:**
-- Complete DAB packaging with working databricks.yml
-- Automated deployment job that builds and logs the model
+- Proper Python package structure with setup.py/pyproject.toml
+- MLflow model logging with versioning and metadata tracking
 - Comprehensive testing and validation strategy (documented)
 - Performance monitoring and error handling
 
 **Success Criteria:**
-- DAB deploys successfully in provided workspace
-- MLflow model serves predictions via REST API
+- Package is installable and can be imported as a module
+- MLflow model is properly logged with all dependencies
 - Error handling covers common failure modes
+- Unit tests cover key functionality
 
 **Recommended Time:** 2-3 hours
 
@@ -82,19 +82,23 @@ This challenge uses a **tiered evaluation approach** that allows you to demonstr
 
 ## Core Deliverables
 
-Your final submission must be a well-structured project organized as a **Databricks Asset Bundle (DAB)** that includes:
+Your final submission must be a well-structured Python package that includes:
 
 ### **1. Custom MLflow Model**
 The complete LangGraph agent, packaged as a custom `mlflow.pyfunc` model with a `predict` method that accepts user queries and returns agent responses.
 
-### **2. Deployment Job**
-A `databricks.yml` file defining a Databricks Job that builds necessary resources and logs the MLflow model to the Tracking Server.
+### **2. Python Package**
+A proper Python package structure with:
+- `setup.py` or `pyproject.toml` for installation
+- Modular code organization (not a monolithic script)
+- Clear separation of concerns (data loading, RAG logic, agent logic, etc.)
 
 ### **3. Comprehensive Documentation**
 A project `README.md` that serves as the single source of truth, including:
 
 - **Architectural Design:** High-level design and key decisions (chunking strategy, agent graph structure, etc.)
-- **Setup & Deployment:** Clear instructions for using the Databricks Asset Bundle
+- **Setup & Installation:** Clear instructions for installing dependencies and running the agent
+- **Usage Examples:** How to run the agent and example queries
 - **Testing & Validation Strategy:** Conceptual framework for production validation, including:
   - Proposed evaluation metrics and automated testing approaches
   - Domain expertise validation methods (e.g., using MLflow evaluation with subject matter expert judgments, golden datasets, or domain-specific benchmarks)
@@ -105,19 +109,14 @@ A project `README.md` that serves as the single source of truth, including:
 
 ## What We Provide
 
-### **Infrastructure & Access**
-- Databricks workspace with LLM and Embedding model permissions
+### **Sample Data**
 - Small dataset of sample documents (`ECU-700-manual.md`, `ECU-800a.md`, `ECU-800b.md`)
-
-### **Resources & Support**
-- **Full Repository Access:** Complete BIOS platform repository with working examples and templates
-- **Documentation:** Step-by-step Databricks workspace configuration guides
-- **Technical Support:** MS Teams or Email for tooling/environment questions
+- Test queries to validate your implementation
 
 ### **Technical Fallback Options**
 - **Vector Store Issues:** Since documents are relatively small, you can implement a fallback strategy that passes document content directly as context to the LLM
-- **DAB Deployment Problems:** Manual MLflow logging with detailed deployment plan is acceptable
 - **Alternative Frameworks:** If LangGraph proves challenging, alternative agent frameworks are allowed with proper justification
+- **Model Selection:** You may use any LLM provider (OpenAI, Anthropic, local models, etc.) - just document your choice and rationale
 
 ---
 
@@ -128,8 +127,8 @@ A project `README.md` that serves as the single source of truth, including:
 2. **Code Quality:** Is the solution well-designed, modular, and maintainable? We value clean code and sound software engineering principles.
 
 ### **Production Readiness**
-3. **MLOps Integration:** How effectively have you used MLflow and Databricks Asset Bundles? Your ability to deliver a deployable, versioned artifact is a key indicator of seniority.
-4. **Deployment Automation:** Does your solution demonstrate production-ready deployment practices?
+3. **MLOps Integration:** How effectively have you used MLflow for model versioning and tracking? Your ability to deliver a deployable, versioned artifact is a key indicator of seniority.
+4. **Package Quality:** Does your solution demonstrate production-ready practices (proper dependency management, error handling, testing)?
 
 ### **Strategic Thinking**
 5. **Architectural Decision-Making:** Your documentation should demonstrate informed design trade-offs and clear articulation of your approach.
@@ -144,7 +143,7 @@ A project `README.md` that serves as the single source of truth, including:
 
 Choose one or more to demonstrate advanced capabilities:
 
-- **Comprehensive Evaluation Framework:** Implement automated testing with predefined engineering questions, domain expertise validation using MLflow evaluation, and performance metrics logging integrated into your Databricks Job.
+- **Comprehensive Evaluation Framework:** Implement automated testing with predefined engineering questions, domain expertise validation using MLflow evaluation, and performance metrics logging.
 
 - **Human-in-the-Loop Integration:** Incorporate mechanisms for handling low-confidence scenarios with human oversight.
 
@@ -154,22 +153,21 @@ Choose one or more to demonstrate advanced capabilities:
 
 ## Getting Started
 
-1. **Repository Access:** Clone the BIOS platform repository and review existing DAB examples
-2. **Environment Setup:** Follow the workspace configuration guide in the platform documentation
-3. **Architecture Planning:** Design your approach using provided patterns and templates
-4. **Iterative Development:** Build incrementally across the three tiers
-5. **Documentation:** Maintain clear documentation throughout development
+1. **Environment Setup:** Set up a Python virtual environment and install required dependencies
+2. **Architecture Planning:** Design your RAG and agent approach before coding
+3. **Iterative Development:** Build incrementally across the three tiers
+4. **Documentation:** Maintain clear documentation throughout development
+5. **Testing:** Validate your solution with the provided test queries
 
 ## Support & Questions
 
-- **Technical Issues:** Contact us via MS Teams or Email for environment/tooling questions
 - **Clarifications:** Don't hesitate to ask about requirements or expectations
-- **Resources:** Leverage the full BIOS repository - it's designed to accelerate your development
+- **Technical Choices:** Document any technical decisions and trade-offs in your README
 
 ---
 
 **Timeline:** You have **10 days** to complete this challenge. We recommend distributing your 8-10 hours across the timeline to allow for iterative development and refinement.
 
-**Submission:** Provide repository access and ensure your DAB is deployable in the provided Databricks workspace.
+**Submission:** Provide repository access with complete documentation. The solution should be runnable locally with clear setup instructions.
 
 Good luck! We're excited to see your approach to building production-ready AI engineering solutions.
