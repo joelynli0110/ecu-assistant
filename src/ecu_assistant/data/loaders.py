@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from importlib import resources
 from pathlib import Path
 
@@ -15,15 +16,115 @@ FEATURE_ALIASES = {
     "power consumption": "power",
 }
 
+FIELD_ALIASES = {
+    "processor": {
+        "processor", "processors", "cpu", "cpus", "chip", "chipset",
+        "clock", "clock speed", "processing unit",
+    },
+    "memory": {"memory", "memory capacity", "ram", "ram capacity", "sram", "lpddr4"},
+    "storage": {
+        "storage", "storage capacity", "flash", "internal flash", "emmc",
+        "flash memory", "disk", "disk space", "disk capacity", "capacity",
+    },
+    "can": {
+        "can", "can bus", "can interface", "can speed", "can bus speed",
+        "can capability", "can capabilities", "bus throughput",
+    },
+    "operating voltage": {
+        "operating voltage", "voltage", "voltage range", "supply voltage",
+    },
+    "power": {
+        "power", "power consumption", "current", "current draw",
+        "energy consumption", "under load", "idle consumption",
+    },
+    "operating temperature": {
+        "operating temperature", "temperature", "temperature range",
+        "max temperature", "maximum temperature", "thermal range",
+    },
+    "connectors": {"connector", "connectors", "ports", "physical connectors"},
+    "ethernet": {"ethernet", "network interface", "networking"},
+    "npu": {
+        "npu", "neural processing unit", "ai accelerator", "ai acceleration",
+        "ai capability", "ai capabilities", "tops",
+    },
+    "ota": {
+        "ota", "over the air", "over-the-air", "ota update", "ota updates",
+        "wireless update", "wireless updates", "firmware update",
+        "firmware updates", "remote update", "remote updates",
+    },
+}
+
 
 def normalize_text(text: str) -> str:
     """Repair known source encoding issues and normalize line endings."""
 
-    return text.replace("掳C", "°C").replace("\r\n", "\n").strip()
+    return text.replace("\u63b3C", "°C").replace("\r\n", "\n").strip()
 
 
 def _clean_markdown(value: str) -> str:
     return re.sub(r"[*_`]", "", value).strip()
+
+
+def normalize_field(field: str) -> str:
+    """Resolve aliases to a canonical document field name."""
+
+    normalized = re.sub(r"[^a-z0-9]+", " ", field.lower()).strip()
+    for canonical, aliases in FIELD_ALIASES.items():
+        normalized_aliases = {
+            re.sub(r"[^a-z0-9]+", " ", alias.lower()).strip()
+            for alias in aliases | {canonical}
+        }
+        if normalized in normalized_aliases:
+            return canonical
+    return FEATURE_ALIASES.get(normalized, normalized)
+
+
+def detect_spec_field(
+    query: str,
+    records: Mapping[str, ModelRecord],
+) -> str | None:
+    """Detect a requested field from aliases or dynamically parsed table keys."""
+
+    normalized_query = f" {re.sub(r'[^a-z0-9]+', ' ', query.lower()).strip()} "
+    candidates: dict[str, set[str]] = {
+        canonical: aliases | {canonical}
+        for canonical, aliases in FIELD_ALIASES.items()
+    }
+    for record in records.values():
+        for field in record.specs:
+            canonical = normalize_field(field)
+            candidates.setdefault(canonical, set()).add(field)
+
+    matches: list[tuple[int, str]] = []
+    for canonical, aliases in candidates.items():
+        for alias in aliases:
+            normalized_alias = re.sub(r"[^a-z0-9]+", " ", alias.lower()).strip()
+            if normalized_alias and f" {normalized_alias} " in normalized_query:
+                matches.append((len(normalized_alias), canonical))
+    return max(matches, default=(0, ""))[1] or None
+
+
+def lookup_spec(
+    records: Mapping[str, ModelRecord],
+    model: str,
+    field: str,
+) -> str | None:
+    """Look up any parsed specification field for one model."""
+
+    record = records.get(model)
+    if not record:
+        return None
+    return record.specs.get(normalize_field(field))
+
+
+def compare_specs(
+    records: Mapping[str, ModelRecord],
+    models: Sequence[str],
+    field: str,
+) -> dict[str, str | None]:
+    """Look up one arbitrary field across multiple models."""
+
+    return {model: lookup_spec(records, model, field) for model in models}
 
 
 class DocumentRepository:
@@ -75,11 +176,14 @@ class DocumentRepository:
                 ota = "not supported" not in lower
             if model == "ECU-850b" and "includes all features" in lower:
                 ota = True
+            specs = self._parse_table(text)
+            if ota is not None:
+                specs["ota"] = "Supported" if ota else "Not supported"
             records[model] = ModelRecord(
                 model=model,
                 series="ECU-700" if model == "ECU-750" else "ECU-800",
                 source=SOURCE_FILES[model],
-                specs=self._parse_table(text),
+                specs=specs,
                 ota_supported=ota,
                 text=text,
             )
@@ -90,3 +194,16 @@ class DocumentRepository:
 
         return [self.records[model] for model in models if model in self.records]
 
+    def lookup_spec(self, model: str, field: str) -> str | None:
+        """Look up any parsed field for a model."""
+
+        return lookup_spec(self.records, model, field)
+
+    def compare_specs(
+        self,
+        models: Sequence[str],
+        field: str,
+    ) -> dict[str, str | None]:
+        """Compare one parsed field across models."""
+
+        return compare_specs(self.records, models, field)

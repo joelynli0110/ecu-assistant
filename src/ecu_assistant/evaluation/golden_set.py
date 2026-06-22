@@ -35,9 +35,8 @@ def load_golden_set(csv_path: Path | None = None) -> list[GoldenQuestion]:
                 question_id=row["Question_ID"],
                 category=row["Category"],
                 question=row["Question"],
-                expected_answer=row["Expected_Answer"].replace("掳C", "°C"),
+                expected_answer=row["Expected_Answer"].replace("\u63b3C", "°C"),
                 evaluation_criteria=row["Evaluation_Criteria"],
             )
             for row in csv.DictReader(handle)
         ]
-

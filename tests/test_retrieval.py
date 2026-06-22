@@ -1,7 +1,12 @@
 """Data loading, chunking, embedding, and retrieval tests."""
 
 from ecu_assistant.config import AgentConfig
-from ecu_assistant.data.loaders import DocumentRepository
+from ecu_assistant.data.loaders import (
+    DocumentRepository,
+    compare_specs,
+    detect_spec_field,
+    lookup_spec,
+)
 from ecu_assistant.retrieval.chunking import chunk_records
 from ecu_assistant.retrieval.embeddings import LocalHashEmbeddings, build_embeddings
 from ecu_assistant.retrieval.retriever import ECURetriever
@@ -49,3 +54,37 @@ def test_retriever_preserves_both_comparison_models():
         document.metadata["model"] for document in documents
     }
 
+
+def test_lookup_spec_supports_arbitrary_parsed_fields_and_aliases():
+    records = DocumentRepository().records
+
+    assert lookup_spec(records, "ECU-750", "CPU") == "32-bit Cortex-M4 @ 120 MHz"
+    assert lookup_spec(records, "ECU-850", "CAN bus") == (
+        "Dual Channel, CAN FD up to 2 Mbps per channel"
+    )
+    assert lookup_spec(records, "ECU-850b", "disk capacity") == "32 GB eMMC"
+    assert lookup_spec(records, "ECU-750", "remote updates") == "Not supported"
+    assert lookup_spec(records, "ECU-850", "Ethernet") == "1x 100BASE-T1"
+
+
+def test_compare_specs_returns_values_for_each_requested_model():
+    records = DocumentRepository().records
+
+    assert compare_specs(
+        records,
+        ["ECU-750", "ECU-850", "ECU-850b"],
+        "storage capacity",
+    ) == {
+        "ECU-750": "2 MB Internal Flash",
+        "ECU-850": "16 GB eMMC",
+        "ECU-850b": "32 GB eMMC",
+    }
+
+
+def test_field_detection_uses_aliases_and_dynamic_document_fields():
+    records = DocumentRepository().records
+
+    assert detect_spec_field("Which CPU architecture powers the ECU-750?", records) == (
+        "processor"
+    )
+    assert detect_spec_field("What network interface is on ECU-850?", records) == "ethernet"

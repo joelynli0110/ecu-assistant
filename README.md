@@ -82,6 +82,7 @@ Key decisions:
 - Deterministic model routing prevents ECU-850/ECU-850b confusion.
 - Heading-based chunks keep specification tables intact.
 - Comparisons preserve evidence from each requested model.
+- Generic `lookup_spec` and `compare_specs` operate on any parsed document field.
 - LLM and embedding providers are configured independently.
 - Low-confidence output retries once, then requests human review.
 - The offline answerer derives facts from the documents.
@@ -181,6 +182,37 @@ Response:
   "needs_human_review": false
 }
 ```
+
+### Generic specification API
+
+Table fields are resolved dynamically, with aliases such as CPU → processor,
+flash → storage, CAN bus → CAN, and remote updates → OTA:
+
+```python
+from ecu_assistant.data import DocumentRepository
+
+repository = DocumentRepository()
+
+repository.lookup_spec("ECU-750", "CPU")
+# "32-bit Cortex-M4 @ 120 MHz"
+
+repository.lookup_spec("ECU-850", "network interface")
+# "1x 100BASE-T1"
+
+repository.compare_specs(
+    ["ECU-750", "ECU-850", "ECU-850b"],
+    "storage capacity",
+)
+# {
+#   "ECU-750": "2 MB Internal Flash",
+#   "ECU-850": "16 GB eMMC",
+#   "ECU-850b": "32 GB eMMC",
+# }
+```
+
+New table fields require no answer-handler changes: the loader adds them to
+`ModelRecord.specs`, field detection discovers the key, and the generic lookup or
+comparison formatter returns the values with sources.
 
 ## Evaluation
 

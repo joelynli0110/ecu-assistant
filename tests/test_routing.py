@@ -17,6 +17,13 @@ def test_routes_cross_model_comparison():
     assert route.intent == "comparison"
 
 
+def test_routes_contrast_wording_as_comparison():
+    route = QueryRouter().route("Contrast the processors in ECU-850 and ECU-850b.")
+
+    assert route.models == ["ECU-850", "ECU-850b"]
+    assert route.intent == "comparison"
+
+
 def test_routes_fleet_question_to_all_models():
     route = QueryRouter().route("Which ECU models support OTA?")
 

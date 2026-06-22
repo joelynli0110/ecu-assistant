@@ -86,3 +86,42 @@ def test_grounded_answerer_accepts_a_langchain_chat_model():
     assert result.confidence == 0.86
     assert result.needs_human_review is False
 
+
+@pytest.mark.parametrize(
+    ("question", "required_terms"),
+    [
+        (
+            "Which CPU architecture and clock rate powers the ECU-750?",
+            ["ECU-750", "Cortex-M4", "120 MHz"],
+        ),
+        (
+            "How fast is the CAN bus on the 850b?",
+            ["ECU-850b", "Dual Channel", "2 Mbps"],
+        ),
+        (
+            "Contrast the flash memory available on ECU-750 and ECU-850b.",
+            ["ECU-750", "2 MB", "ECU-850b", "32 GB"],
+        ),
+        (
+            "Can the 750 receive remote firmware updates?",
+            ["ECU-750", "does not support OTA"],
+        ),
+        (
+            "What network interface does the ECU-850 use?",
+            ["ECU-850", "1x 100BASE-T1"],
+        ),
+        (
+            "Compare the processors used by ECU-850 and ECU-850b.",
+            ["ECU-850", "1.2 GHz", "ECU-850b", "1.5 GHz"],
+        ),
+        (
+            "Which physical connectors are available on ECU-750?",
+            ["Main Automotive Connector", "JTAG"],
+        ),
+    ],
+)
+def test_generic_spec_questions_support_new_wordings(agent, question, required_terms):
+    result = agent.invoke(question)
+
+    assert all(term.lower() in result["answer"].lower() for term in required_terms)
+    assert result["needs_human_review"] is False

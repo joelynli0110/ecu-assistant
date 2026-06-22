@@ -17,7 +17,7 @@ STOPWORDS = {
 
 
 def _tokens(text: str) -> set[str]:
-    normalized = text.lower().replace("掳c", "°c")
+    normalized = text.lower().replace("\u63b3c", "°c")
     return {
         token
         for token in re.findall(r"[a-z0-9.+-]+|°c", normalized)
@@ -55,4 +55,3 @@ def aggregate_metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
         "mean_latency_seconds": mean(latencies),
         "p95_latency_seconds": latencies[max(0, int(len(latencies) * 0.95) - 1)],
     }
-
