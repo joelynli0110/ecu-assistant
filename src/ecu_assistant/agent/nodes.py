@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.documents import Document
@@ -25,10 +26,19 @@ class QueryRouter:
     """Route explicit model mentions and infer broad comparison queries."""
 
     MODEL_PATTERNS = {
-        "ECU-850b": re.compile(r"\b(?:ecu[-\s]?)?850b\b", re.IGNORECASE),
-        "ECU-850": re.compile(r"\b(?:ecu[-\s]?)?850(?!b)\b", re.IGNORECASE),
-        "ECU-750": re.compile(r"\b(?:ecu[-\s]?)?750\b", re.IGNORECASE),
+        "ECU-850b": re.compile(
+            r"\b(?:ecu[-_\s]*)?850[-_\s]*b\b",
+            re.IGNORECASE,
+        ),
+        "ECU-850": re.compile(
+            r"\b(?:ecu[-_\s]*)?850(?![-_\s]*b\b)\b",
+            re.IGNORECASE,
+        ),
+        "ECU-750": re.compile(r"\b(?:ecu[-_\s]*)?750\b", re.IGNORECASE),
     }
+
+    def __init__(self, records: Mapping[str, ModelRecord] | None = None):
+        self.records = records or {}
 
     @staticmethod
     def _intent(query: str) -> str:
@@ -65,7 +75,12 @@ class QueryRouter:
         else:
             models = [model for model in ALL_MODELS if model in models]
             reason = f"Explicit model or series references selected: {', '.join(models)}."
-        return RouteDecision(models=models, intent=self._intent(query), reason=reason)
+        return RouteDecision(
+            models=models,
+            intent=self._intent(query),
+            field=detect_spec_field(query, self.records),
+            reason=reason,
+        )
 
 
 def _source_list(records: list[ModelRecord]) -> str:
@@ -119,10 +134,11 @@ class ExtractiveAnswerer:
         self,
         query: str,
         records: list[ModelRecord],
+        field: str | None = None,
     ) -> AnswerResult | None:
         """Answer any field parsed from source tables or feature metadata."""
 
-        field = detect_spec_field(query, self.repository.records)
+        field = field or detect_spec_field(query, self.repository.records)
         if not field or not records:
             return None
 
@@ -223,14 +239,19 @@ class ExtractiveAnswerer:
                 )
         return None
 
-    def answer(self, query: str, models: list[str]) -> AnswerResult:
+    def answer(
+        self,
+        query: str,
+        models: list[str],
+        field: str | None = None,
+    ) -> AnswerResult:
         """Generate a deterministic document-derived answer."""
 
         records = self.repository.records_for(models)
         result = self._fleet_answer(query, records)
         if not result and len(records) == 1:
             result = self._single_answer(query, records[0])
-        result = result or self._generic_spec_answer(query, records)
+        result = result or self._generic_spec_answer(query, records, field)
         result = result or self._comparison(query, records)
         if result:
             return result
@@ -294,7 +315,7 @@ class AgentNodes:
         retriever: ECURetriever,
     ):
         self.config = config
-        self.router = QueryRouter()
+        self.router = QueryRouter(repository.records)
         self.retriever = retriever
         self.extractive_answerer = ExtractiveAnswerer(repository)
         self.llm_answerer = (
@@ -310,6 +331,7 @@ class AgentNodes:
         return {
             "routed_models": decision.models,
             "intent": decision.intent,
+            "field": decision.field,
             "route_reason": decision.reason,
             "retrieval_attempt": 0,
             "broaden": False,
@@ -335,7 +357,9 @@ class AgentNodes:
             )
         else:
             result = self.extractive_answerer.answer(
-                state["query"], state["routed_models"]
+                state["query"],
+                state["routed_models"],
+                state.get("field"),
             )
         citations = sorted(
             {
@@ -367,24 +391,23 @@ class AgentNodes:
         }
 
     def after_assessment(self, state: AgentState) -> str:
-        """Choose whether to broaden retrieval or finish."""
+        """Choose whether to broaden chunk search within the routed scope."""
 
         if (
             state.get("confidence", 0.0) < self.config.low_confidence_threshold
             and state.get("retrieval_attempt", 0) == 0
-            and set(state.get("routed_models", [])) != set(ALL_MODELS)
         ):
             return "broaden"
         return "finish"
 
     @staticmethod
     def broaden_retrieval(state: AgentState) -> dict[str, Any]:
-        """Expand a low-confidence retry to the full corpus."""
+        """Broaden chunk search without changing the routed model scope."""
 
         return {
-            "routed_models": list(ALL_MODELS),
             "route_reason": (
-                f"{state['route_reason']} Low confidence triggered a full-corpus retry."
+                f"{state['route_reason']} Low confidence triggered a broader "
+                "chunk search within the same model scope."
             ),
             "retrieval_attempt": state.get("retrieval_attempt", 0) + 1,
             "broaden": True,

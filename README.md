@@ -80,6 +80,8 @@ START
 Key decisions:
 
 - Deterministic model routing prevents ECU-850/ECU-850b confusion.
+- Router decisions expose `models`, `intent`, and `field`.
+- Explicit model scope is never expanded to unrelated ECU models.
 - Heading-based chunks keep specification tables intact.
 - Comparisons preserve evidence from each requested model.
 - Generic `lookup_spec` and `compare_specs` operate on any parsed document field.
@@ -179,9 +181,38 @@ Response:
   "citations": ["ECU-800_Series_Base.md"],
   "routed_models": ["ECU-850"],
   "intent": "specification",
+  "field": "memory",
   "needs_human_review": false
 }
 ```
+
+Routing examples:
+
+```python
+from ecu_assistant.agent.nodes import QueryRouter
+
+router = QueryRouter()
+
+router.route("850 storage")
+# RouteDecision(
+#   models=["ECU-850"],
+#   intent="specification",
+#   field="storage",
+#   ...
+# )
+
+router.route("ECU 850 b CAN speed")
+# RouteDecision(
+#   models=["ECU-850b"],
+#   intent="specification",
+#   field="can",
+#   ...
+# )
+```
+
+Low-confidence retries broaden chunk retrieval only within the routed models.
+For example, an unsupported ECU-750 question remains scoped to ECU-750 and never
+retrieves ECU-850 or ECU-850b documents.
 
 ### Generic specification API
 

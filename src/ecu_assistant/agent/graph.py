@@ -54,6 +54,8 @@ class ECUEngineeringAgent:
                 "confidence": 0.0,
                 "citations": [],
                 "routed_models": [],
+                "intent": "invalid",
+                "field": None,
                 "needs_human_review": True,
             }
         state = self.graph.invoke({"query": clean_query})
@@ -63,6 +65,6 @@ class ECUEngineeringAgent:
             "citations": state["citations"],
             "routed_models": state["routed_models"],
             "intent": state["intent"],
+            "field": state.get("field"),
             "needs_human_review": state["needs_human_review"],
         }
-

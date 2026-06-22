@@ -13,6 +13,7 @@ class AgentState(TypedDict, total=False):
     query: str
     routed_models: list[str]
     intent: str
+    field: str | None
     route_reason: str
     documents: list[Document]
     answer: str
@@ -21,4 +22,3 @@ class AgentState(TypedDict, total=False):
     needs_human_review: bool
     retrieval_attempt: int
     broaden: bool
-

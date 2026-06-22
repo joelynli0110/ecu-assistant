@@ -17,6 +17,7 @@ def test_predict_accepts_dataframe_batches():
 
     assert len(result) == 2
     assert "2 GB" in result[0]["answer"]
+    assert result[0]["field"] == "memory"
 
 
 def test_predict_accepts_record_lists():
@@ -25,6 +26,7 @@ def test_predict_accepts_record_lists():
     result = model.predict(None, [{"query": "How much RAM does the ECU-850 have?"}])
 
     assert result[0]["routed_models"] == ["ECU-850"]
+    assert result[0]["field"] == "memory"
 
 
 def test_predict_rejects_missing_query_column():
@@ -33,4 +35,3 @@ def test_predict_rejects_missing_query_column():
             None,
             pd.DataFrame({"question": ["hello"]}),
         )
-

@@ -27,10 +27,11 @@ class ModelRecord:
 
 @dataclass(frozen=True)
 class RouteDecision:
-    """Models and intent selected for a user question."""
+    """Models, intent, and specification field selected for a query."""
 
     models: list[str]
     intent: str
+    field: str | None
     reason: str
 
 
@@ -41,4 +42,3 @@ class AnswerResult:
     text: str
     confidence: float
     needs_human_review: bool = False
-

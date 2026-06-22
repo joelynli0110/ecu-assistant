@@ -60,7 +60,7 @@ def test_challenge_answers(agent, question, required_terms):
 def test_unsupported_question_is_flagged_for_review(agent):
     result = agent.invoke("What is the ECU-750 Bluetooth firmware version?")
 
-    assert result["routed_models"] == ["ECU-750", "ECU-850", "ECU-850b"]
+    assert result["routed_models"] == ["ECU-750"]
     assert result["needs_human_review"] is True
     assert result["confidence"] < 0.55
 
@@ -125,3 +125,27 @@ def test_generic_spec_questions_support_new_wordings(agent, question, required_t
 
     assert all(term.lower() in result["answer"].lower() for term in required_terms)
     assert result["needs_human_review"] is False
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_model", "expected_field", "expected_value"),
+    [
+        ("850 storage", "ECU-850", "storage", "16 GB eMMC"),
+        ("750 processor", "ECU-750", "processor", "Cortex-M4"),
+        ("850b storage", "ECU-850b", "storage", "32 GB eMMC"),
+        ("ECU 850 b CAN speed", "ECU-850b", "can", "2 Mbps"),
+    ],
+)
+def test_explicit_model_scope_is_preserved(
+    agent,
+    question,
+    expected_model,
+    expected_field,
+    expected_value,
+):
+    result = agent.invoke(question)
+
+    assert result["routed_models"] == [expected_model]
+    assert result["intent"] == "specification"
+    assert result["field"] == expected_field
+    assert expected_value in result["answer"]

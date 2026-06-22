@@ -52,6 +52,7 @@ def log_model() -> str:
             "citations": ["ECU-800_Series_Base.md"],
             "routed_models": ["ECU-850"],
             "intent": "specification",
+            "field": "memory",
             "needs_human_review": False,
         }
     ]
