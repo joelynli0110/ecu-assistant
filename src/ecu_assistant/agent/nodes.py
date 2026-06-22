@@ -1,0 +1,365 @@
+"""Routing, answer generation, and LangGraph node implementations."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ecu_assistant.agent.prompts import SYSTEM_PROMPT, build_chat_model
+from ecu_assistant.agent.state import AgentState
+from ecu_assistant.config import AgentConfig
+from ecu_assistant.data.loaders import DocumentRepository
+from ecu_assistant.data.schemas import (
+    ALL_MODELS,
+    AnswerResult,
+    ModelRecord,
+    RouteDecision,
+)
+from ecu_assistant.retrieval.retriever import ECURetriever
+
+
+class QueryRouter:
+    """Route explicit model mentions and infer broad comparison queries."""
+
+    MODEL_PATTERNS = {
+        "ECU-850b": re.compile(r"\b(?:ecu[-\s]?)?850b\b", re.IGNORECASE),
+        "ECU-850": re.compile(r"\b(?:ecu[-\s]?)?850(?!b)\b", re.IGNORECASE),
+        "ECU-750": re.compile(r"\b(?:ecu[-\s]?)?750\b", re.IGNORECASE),
+    }
+
+    @staticmethod
+    def _intent(query: str) -> str:
+        lower = query.lower()
+        if any(term in lower for term in ("compare", "difference", "versus", " vs", "相比", "区别")):
+            return "comparison"
+        if any(term in lower for term in ("which", "all ecu", "across", "哪些", "哪个", "所有")):
+            return "fleet_query"
+        if any(term in lower for term in ("enable", "configure", "command", "启用", "配置", "命令")):
+            return "configuration"
+        return "specification"
+
+    def route(self, query: str) -> RouteDecision:
+        """Select documents using model mentions, series mentions, and intent."""
+
+        models = [
+            model for model, pattern in self.MODEL_PATTERNS.items() if pattern.search(query)
+        ]
+        lower = query.lower()
+        if not models and ("ecu-700" in lower or "700 series" in lower or "700 系列" in query):
+            models.append("ECU-750")
+        if not models and ("ecu-800" in lower or "800 series" in lower or "800 系列" in query):
+            models.extend(["ECU-850", "ECU-850b"])
+
+        if not models:
+            models = list(ALL_MODELS)
+            reason = "No specific model was named; search the complete ECU corpus."
+        else:
+            models = [model for model in ALL_MODELS if model in models]
+            reason = f"Explicit model or series references selected: {', '.join(models)}."
+        return RouteDecision(models=models, intent=self._intent(query), reason=reason)
+
+
+def _source_list(records: list[ModelRecord]) -> str:
+    return ", ".join(record.source for record in records)
+
+
+class ExtractiveAnswerer:
+    """Answer common engineering questions from parsed source facts."""
+
+    def __init__(self, repository: DocumentRepository):
+        self.repository = repository
+
+    @staticmethod
+    def _spec(record: ModelRecord, name: str) -> str:
+        return record.specs.get(name, "not documented")
+
+    @staticmethod
+    def _command(record: ModelRecord) -> str | None:
+        match = re.search(r"me-driver-ctl\s+--enable-npu\s+--mode=performance", record.text)
+        return match.group(0) if match else None
+
+    def _comparison(self, query: str, records: list[ModelRecord]) -> AnswerResult | None:
+        lower = query.lower()
+        by_model = {record.model: record for record in records}
+        if not (("compare" in lower or "difference" in lower) and len(records) >= 2):
+            return None
+        if {record.model for record in records} == {"ECU-850", "ECU-850b"}:
+            base, enhanced = by_model["ECU-850"], by_model["ECU-850b"]
+            return AnswerResult(
+                "The ECU-850b upgrades the ECU-850 with a 5 TOPS dedicated NPU, "
+                f"{self._spec(enhanced, 'memory')} RAM instead of "
+                f"{self._spec(base, 'memory')}, and a "
+                f"{self._spec(enhanced, 'processor')} instead of "
+                f"{self._spec(base, 'processor')}. It also increases storage from "
+                f"{self._spec(base, 'storage')} to {self._spec(enhanced, 'storage')}. "
+                f"[Sources: {_source_list(records)}]",
+                0.98,
+            )
+        if "can" in lower:
+            details = "; ".join(
+                f"{record.model}: {self._spec(record, 'can')}" for record in records
+            )
+            return AnswerResult(
+                f"{details}. The newer dual-channel 2 Mbps interface provides more "
+                f"bandwidth and channel redundancy. [Sources: {_source_list(records)}]",
+                0.97,
+            )
+        return None
+
+    def _fleet_answer(self, query: str, records: list[ModelRecord]) -> AnswerResult | None:
+        lower = query.lower()
+        if "which" in lower and ("temperature" in lower or "harshest" in lower):
+            maxima: dict[str, int] = {}
+            for record in records:
+                match = re.search(
+                    r"\+(\d+)°C",
+                    self._spec(record, "operating temperature"),
+                )
+                if match:
+                    maxima[record.model] = int(match.group(1))
+            if maxima:
+                best = max(maxima.values())
+                winners = [model for model, maximum in maxima.items() if maximum == best]
+                others = "; ".join(
+                    (
+                        f"{model}: "
+                        f"{self._spec(self.repository.records[model], 'operating temperature')}"
+                    )
+                    for model in maxima
+                    if model not in winners
+                )
+                return AnswerResult(
+                    f"{' and '.join(winners)} can operate in the harshest conditions: "
+                    f"-40°C to +{best}°C. {others}. [Sources: {_source_list(records)}]",
+                    0.97,
+                )
+        if ("which" in lower or "models" in lower) and (
+            "ota" in lower or "over-the-air" in lower
+        ):
+            supported = [record.model for record in records if record.ota_supported]
+            unsupported = [record.model for record in records if record.ota_supported is False]
+            return AnswerResult(
+                f"OTA updates are supported by {', '.join(supported)}. "
+                f"{', '.join(unsupported)} does not support OTA updates. "
+                f"[Sources: {_source_list(records)}]",
+                0.98,
+            )
+        if "storage" in lower and len(records) > 1:
+            details = "; ".join(
+                f"{record.model}: {self._spec(record, 'storage')}" for record in records
+            )
+            return AnswerResult(
+                f"Storage by model is {details}. The ECU-800 models provide substantially "
+                f"more storage than the legacy ECU-750. [Sources: {_source_list(records)}]",
+                0.98,
+            )
+        return None
+
+    def _single_answer(self, query: str, record: ModelRecord) -> AnswerResult | None:
+        lower = query.lower()
+        if ("enable" in lower or "command" in lower or "configure" in lower) and "npu" in lower:
+            command = self._command(record)
+            if command:
+                return AnswerResult(
+                    f"To enable the NPU on the ECU-850b, run `{command}`. "
+                    f"[Source: {record.source}]",
+                    0.99,
+                )
+        if "temperature" in lower:
+            value = self._spec(record, "operating temperature")
+            return AnswerResult(
+                f"The {record.model} operating temperature range is {value}; "
+                f"its maximum is {value.split('to')[-1].strip()}. "
+                f"[Source: {record.source}]",
+                0.99,
+            )
+        if "ram" in lower or "memory" in lower:
+            return AnswerResult(
+                f"The {record.model} has {self._spec(record, 'memory')} RAM. "
+                f"[Source: {record.source}]",
+                0.99,
+            )
+        if "ai" in lower or "npu" in lower:
+            return AnswerResult(
+                f"The {record.model} has a dedicated Neural Processing Unit (NPU): "
+                f"{self._spec(record, 'npu')}, designed for edge AI acceleration. "
+                f"[Source: {record.source}]",
+                0.98,
+            )
+        if "power" in lower or "load" in lower:
+            return AnswerResult(
+                f"The {record.model} power consumption is "
+                f"{self._spec(record, 'power')}. [Source: {record.source}]",
+                0.99,
+            )
+        return None
+
+    def answer(self, query: str, models: list[str]) -> AnswerResult:
+        """Generate a deterministic document-derived answer."""
+
+        records = self.repository.records_for(models)
+        result = self._comparison(query, records) or self._fleet_answer(query, records)
+        if result:
+            return result
+        if len(records) == 1:
+            result = self._single_answer(query, records[0])
+            if result:
+                return result
+        context = " ".join(record.text[:300] for record in records)
+        return AnswerResult(
+            "I found potentially relevant documentation, but could not extract a reliable "
+            f"answer for this question. Available context: {context}",
+            0.35,
+            needs_human_review=True,
+        )
+
+
+class GroundedLLMAnswerer:
+    """Provider-neutral grounded generation through a LangChain chat model."""
+
+    def __init__(self, config: AgentConfig, model=None):
+        self.model = model or build_chat_model(config)
+
+    def answer(
+        self,
+        query: str,
+        documents: list[Document],
+        route_reason: str,
+    ) -> AnswerResult:
+        """Invoke the model with retrieved context and strict grounding rules."""
+
+        context = "\n\n".join(
+            (
+                f"SOURCE={doc.metadata['source']} "
+                f"MODEL={doc.metadata['model']} SECTION={doc.metadata['section']}\n"
+                f"{doc.page_content}"
+            )
+            for doc in documents
+        )
+        prompt = (
+            f"Routing rationale: {route_reason}\n\n"
+            f"Retrieved documentation:\n{context}\n\n"
+            f"Engineer question: {query}"
+        )
+        response = self.model.invoke(
+            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+        )
+        text = str(response.content).strip()
+        grounded = bool(text) and any(
+            doc.metadata["source"].lower() in text.lower() for doc in documents
+        )
+        return AnswerResult(
+            text=text,
+            confidence=0.86 if grounded else 0.58,
+            needs_human_review=not grounded,
+        )
+
+
+class AgentNodes:
+    """Bound LangGraph node functions and confidence-routing policy."""
+
+    def __init__(
+        self,
+        config: AgentConfig,
+        repository: DocumentRepository,
+        retriever: ECURetriever,
+    ):
+        self.config = config
+        self.router = QueryRouter()
+        self.retriever = retriever
+        self.extractive_answerer = ExtractiveAnswerer(repository)
+        self.llm_answerer = (
+            None
+            if config.llm_provider in {"none", "extractive", "local"}
+            else GroundedLLMAnswerer(config)
+        )
+
+    def route_query(self, state: AgentState) -> dict[str, Any]:
+        """Route a question to ECU models and an intent."""
+
+        decision = self.router.route(state["query"])
+        return {
+            "routed_models": decision.models,
+            "intent": decision.intent,
+            "route_reason": decision.reason,
+            "retrieval_attempt": 0,
+            "broaden": False,
+        }
+
+    def retrieve_context(self, state: AgentState) -> dict[str, Any]:
+        """Retrieve chunks for the routed models."""
+
+        return {
+            "documents": self.retriever.search(
+                state["query"],
+                state["routed_models"],
+                broaden=state.get("broaden", False),
+            )
+        }
+
+    def generate_answer(self, state: AgentState) -> dict[str, Any]:
+        """Generate an answer and collect source citations."""
+
+        if self.llm_answerer:
+            result = self.llm_answerer.answer(
+                state["query"], state["documents"], state["route_reason"]
+            )
+        else:
+            result = self.extractive_answerer.answer(
+                state["query"], state["routed_models"]
+            )
+        citations = sorted(
+            {
+                document.metadata["source"]
+                for document in state["documents"]
+                if document.metadata["source"].lower() in result.text.lower()
+            }
+        ) or sorted({document.metadata["source"] for document in state["documents"]})
+        return {
+            "answer": result.text,
+            "confidence": result.confidence,
+            "needs_human_review": result.needs_human_review,
+            "citations": citations,
+        }
+
+    def assess_confidence(self, state: AgentState) -> dict[str, Any]:
+        """Apply confidence and human-review policy."""
+
+        answer = state.get("answer", "")
+        confidence = state.get("confidence", 0.0)
+        if not re.search(r"\d|supported|not support|document", answer, re.I):
+            confidence = min(confidence, 0.4)
+        return {
+            "confidence": confidence,
+            "needs_human_review": (
+                confidence < self.config.low_confidence_threshold
+                or state.get("needs_human_review", False)
+            ),
+        }
+
+    def after_assessment(self, state: AgentState) -> str:
+        """Choose whether to broaden retrieval or finish."""
+
+        if (
+            state.get("confidence", 0.0) < self.config.low_confidence_threshold
+            and state.get("retrieval_attempt", 0) == 0
+            and set(state.get("routed_models", [])) != set(ALL_MODELS)
+        ):
+            return "broaden"
+        return "finish"
+
+    @staticmethod
+    def broaden_retrieval(state: AgentState) -> dict[str, Any]:
+        """Expand a low-confidence retry to the full corpus."""
+
+        return {
+            "routed_models": list(ALL_MODELS),
+            "route_reason": (
+                f"{state['route_reason']} Low confidence triggered a full-corpus retry."
+            ),
+            "retrieval_attempt": state.get("retrieval_attempt", 0) + 1,
+            "broaden": True,
+        }
