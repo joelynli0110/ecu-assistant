@@ -18,7 +18,7 @@ class AgentState(TypedDict, total=False):
     documents: list[Document]
     answer: str
     confidence: float
-    citations: list[str]
+    citations: list[dict[str, str]]
     needs_human_review: bool
     retrieval_attempt: int
     broaden: bool

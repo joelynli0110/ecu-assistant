@@ -1,5 +1,7 @@
 """End-to-end tests against the challenge questions."""
 
+import re
+
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
@@ -75,8 +77,7 @@ def test_grounded_answerer_accepts_a_langchain_chat_model():
         AgentConfig(),
         model=FakeListChatModel(
             responses=[
-                "The ECU-850 has 2 GB LPDDR4 RAM. "
-                "[Source: ECU-800_Series_Base.md, ECU-850 Technical Specifications]"
+                "The ECU-850 has 2 GB LPDDR4 RAM [ECU-850-3]."
             ]
         ),
     )
@@ -85,6 +86,7 @@ def test_grounded_answerer_accepts_a_langchain_chat_model():
 
     assert result.confidence == 0.86
     assert result.needs_human_review is False
+    assert result.evidence_chunk_ids == ("ECU-850-3",)
 
 
 @pytest.mark.parametrize(
@@ -149,3 +151,53 @@ def test_explicit_model_scope_is_preserved(
     assert result["intent"] == "specification"
     assert result["field"] == expected_field
     assert expected_value in result["answer"]
+
+
+def test_each_inline_evidence_marker_has_a_structured_chunk_citation(agent):
+    result = agent.invoke("Compare the processors used by ECU-850 and ECU-850b.")
+
+    marker_ids = set(re.findall(r"\[([A-Za-z0-9_-]+)\]", result["answer"]))
+    citation_ids = {citation["chunk_id"] for citation in result["citations"]}
+
+    assert marker_ids == {"ECU-850-3", "ECU-850b-2"}
+    assert citation_ids == marker_ids
+    assert all(
+        {"source", "section", "chunk_id", "model"} <= citation.keys()
+        for citation in result["citations"]
+    )
+
+
+def test_single_fact_citation_points_to_the_supporting_section(agent):
+    result = agent.invoke("850 storage")
+
+    assert result["citations"] == [
+        {
+            "source": "ECU-800_Series_Base.md",
+            "section": "ECU-850 Technical Specifications",
+            "chunk_id": "ECU-850-3",
+            "model": "ECU-850",
+        }
+    ]
+    assert "[ECU-850-3]" in result["answer"]
+
+
+def test_derived_can_comparison_cites_both_supporting_chunks(agent):
+    result = agent.invoke("Compare the CAN bus capabilities of ECU-750 and ECU-850.")
+
+    assert "performance" in result["answer"]
+    assert "redundancy" in result["answer"]
+    assert "[ECU-750-2, ECU-850-3]" in result["answer"]
+    assert {citation["chunk_id"] for citation in result["citations"]} == {
+        "ECU-750-2",
+        "ECU-850-3",
+    }
+
+
+def test_no_evidence_returns_no_citations(agent):
+    result = agent.invoke("What is the ECU-750 Bluetooth firmware version?")
+
+    assert result["answer"] == (
+        "No retrieved evidence supports a reliable answer to this question."
+    )
+    assert result["citations"] == []
+    assert "[" not in result["answer"]

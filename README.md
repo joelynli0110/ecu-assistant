@@ -84,6 +84,10 @@ Key decisions:
 - Explicit model scope is never expanded to unrelated ECU models.
 - Heading-based chunks keep specification tables intact.
 - Comparisons preserve evidence from each requested model.
+- Answers use retrieved chunks only; repository-wide facts are never read at generation time.
+- Every factual claim includes an inline chunk marker.
+- Structured citations identify source, section, chunk ID, and model.
+- Unsupported questions return no citations.
 - Generic `lookup_spec` and `compare_specs` operate on any parsed document field.
 - LLM and embedding providers are configured independently.
 - Low-confidence output retries once, then requests human review.
@@ -176,9 +180,16 @@ Response:
 
 ```json
 {
-  "answer": "The ECU-850 has 2 GB LPDDR4 RAM. [Source: ECU-800_Series_Base.md]",
+  "answer": "The ECU-850 has 2 GB LPDDR4 RAM [ECU-850-3].",
   "confidence": 0.99,
-  "citations": ["ECU-800_Series_Base.md"],
+  "citations": [
+    {
+      "source": "ECU-800_Series_Base.md",
+      "section": "ECU-850 Technical Specifications",
+      "chunk_id": "ECU-850-3",
+      "model": "ECU-850"
+    }
+  ],
   "routed_models": ["ECU-850"],
   "intent": "specification",
   "field": "memory",
@@ -213,6 +224,16 @@ router.route("ECU 850 b CAN speed")
 Low-confidence retries broaden chunk retrieval only within the routed models.
 For example, an unsupported ECU-750 question remains scoped to ECU-750 and never
 retrieves ECU-850 or ECU-850b documents.
+
+If no retrieved chunk supports the requested fact, the response is:
+
+```json
+{
+  "answer": "No retrieved evidence supports a reliable answer to this question.",
+  "citations": [],
+  "needs_human_review": true
+}
+```
 
 ### Generic specification API
 

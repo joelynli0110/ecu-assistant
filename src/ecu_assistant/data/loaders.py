@@ -65,6 +65,23 @@ def _clean_markdown(value: str) -> str:
     return re.sub(r"[*_`]", "", value).strip()
 
 
+def parse_spec_table(text: str) -> dict[str, str]:
+    """Parse canonical specification fields from one Markdown text fragment."""
+
+    specs: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        if "|" not in raw_line or "---" in raw_line:
+            continue
+        parts = [_clean_markdown(part) for part in raw_line.strip().strip("|").split("|")]
+        if len(parts) < 2:
+            continue
+        feature, value = parts[0].lower(), parts[1]
+        feature = FEATURE_ALIASES.get(feature, feature)
+        if feature not in {"feature", ""} and value.lower() != "specification":
+            specs[normalize_field(feature)] = value
+    return specs
+
+
 def normalize_field(field: str) -> str:
     """Resolve aliases to a canonical document field name."""
 
@@ -152,21 +169,6 @@ class DocumentRepository:
             texts[model] = normalize_text(raw)
         return texts
 
-    @staticmethod
-    def _parse_table(text: str) -> dict[str, str]:
-        specs: dict[str, str] = {}
-        for raw_line in text.splitlines():
-            if "|" not in raw_line or "---" in raw_line:
-                continue
-            parts = [_clean_markdown(part) for part in raw_line.strip().strip("|").split("|")]
-            if len(parts) < 2:
-                continue
-            feature, value = parts[0].lower(), parts[1]
-            feature = FEATURE_ALIASES.get(feature, feature)
-            if feature not in {"feature", ""} and value.lower() != "specification":
-                specs[feature] = value
-        return specs
-
     def _parse_records(self) -> dict[str, ModelRecord]:
         records: dict[str, ModelRecord] = {}
         for model, text in self._texts.items():
@@ -176,7 +178,7 @@ class DocumentRepository:
                 ota = "not supported" not in lower
             if model == "ECU-850b" and "includes all features" in lower:
                 ota = True
-            specs = self._parse_table(text)
+            specs = parse_spec_table(text)
             if ota is not None:
                 specs["ota"] = "Supported" if ota else "Not supported"
             records[model] = ModelRecord(

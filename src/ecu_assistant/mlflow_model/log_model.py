@@ -47,9 +47,16 @@ def log_model() -> str:
     input_example = pd.DataFrame({"query": ["How much RAM does the ECU-850 have?"]})
     output_example = [
         {
-            "answer": "The ECU-850 has 2 GB LPDDR4 RAM.",
+            "answer": "The ECU-850 has 2 GB LPDDR4 RAM [ECU-850-3].",
             "confidence": 0.99,
-            "citations": ["ECU-800_Series_Base.md"],
+            "citations": [
+                {
+                    "source": "ECU-800_Series_Base.md",
+                    "section": "ECU-850 Technical Specifications",
+                    "chunk_id": "ECU-850-3",
+                    "model": "ECU-850",
+                }
+            ],
             "routed_models": ["ECU-850"],
             "intent": "specification",
             "field": "memory",

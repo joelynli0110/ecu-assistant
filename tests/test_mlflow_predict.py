@@ -18,6 +18,7 @@ def test_predict_accepts_dataframe_batches():
     assert len(result) == 2
     assert "2 GB" in result[0]["answer"]
     assert result[0]["field"] == "memory"
+    assert result[0]["citations"][0]["chunk_id"] == "ECU-850-3"
 
 
 def test_predict_accepts_record_lists():

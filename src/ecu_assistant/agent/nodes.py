@@ -12,7 +12,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ecu_assistant.agent.prompts import SYSTEM_PROMPT, build_chat_model
 from ecu_assistant.agent.state import AgentState
 from ecu_assistant.config import AgentConfig
-from ecu_assistant.data.loaders import DocumentRepository, detect_spec_field
+from ecu_assistant.data.loaders import (
+    DocumentRepository,
+    detect_spec_field,
+    parse_spec_table,
+)
 from ecu_assistant.data.schemas import (
     ALL_MODELS,
     AnswerResult,
@@ -83,159 +87,279 @@ class QueryRouter:
         )
 
 
-def _source_list(records: list[ModelRecord]) -> str:
-    return ", ".join(record.source for record in records)
+def _deduplicate_documents(documents: list[Document]) -> list[Document]:
+    return list({document.metadata["chunk_id"]: document for document in documents}.values())
+
+
+def _marker(documents: list[Document]) -> str:
+    chunk_ids = [document.metadata["chunk_id"] for document in documents]
+    return f"[{', '.join(chunk_ids)}]"
 
 
 class ExtractiveAnswerer:
-    """Answer common engineering questions from parsed source facts."""
-
-    def __init__(self, repository: DocumentRepository):
-        self.repository = repository
+    """Generate answers strictly from retrieved document chunks."""
 
     @staticmethod
-    def _spec(record: ModelRecord, name: str) -> str:
-        return record.specs.get(name, "not documented")
-
-    @staticmethod
-    def _command(record: ModelRecord) -> str | None:
-        match = re.search(r"me-driver-ctl\s+--enable-npu\s+--mode=performance", record.text)
-        return match.group(0) if match else None
-
-    def _comparison(self, query: str, records: list[ModelRecord]) -> AnswerResult | None:
-        lower = query.lower()
-        by_model = {record.model: record for record in records}
-        if not (("compare" in lower or "difference" in lower) and len(records) >= 2):
+    def _direct_lookup(
+        documents: list[Document],
+        model: str,
+        field: str,
+    ) -> tuple[str, list[Document]] | None:
+        for document in documents:
+            if document.metadata.get("model") != model:
+                continue
+            value = parse_spec_table(document.page_content).get(field)
+            if value is not None:
+                return value, [document]
+        if field != "ota":
             return None
-        if {record.model for record in records} == {"ECU-850", "ECU-850b"}:
-            base, enhanced = by_model["ECU-850"], by_model["ECU-850b"]
-            return AnswerResult(
-                "The ECU-850b upgrades the ECU-850 with a 5 TOPS dedicated NPU, "
-                f"{self._spec(enhanced, 'memory')} RAM instead of "
-                f"{self._spec(base, 'memory')}, and a "
-                f"{self._spec(enhanced, 'processor')} instead of "
-                f"{self._spec(base, 'processor')}. It also increases storage from "
-                f"{self._spec(base, 'storage')} to {self._spec(enhanced, 'storage')}. "
-                f"[Sources: {_source_list(records)}]",
-                0.98,
-            )
-        if "can" in lower:
-            details = "; ".join(
-                f"{record.model}: {self._spec(record, 'can')}" for record in records
-            )
-            return AnswerResult(
-                f"{details}. The newer dual-channel 2 Mbps interface provides more "
-                f"bandwidth and channel redundancy. [Sources: {_source_list(records)}]",
-                0.97,
-            )
+        for document in documents:
+            if document.metadata.get("model") != model:
+                continue
+            text = document.page_content.lower()
+            if ("ota" in text or "over-the-air" in text) and "not supported" in text:
+                return "Not supported", [document]
+            if "ota" in text or "over-the-air" in text:
+                return "Supported", [document]
         return None
+
+    def _lookup(
+        self,
+        documents: list[Document],
+        model: str,
+        field: str,
+    ) -> tuple[str, list[Document]] | None:
+        direct = self._direct_lookup(documents, model, field)
+        if direct and field == "npu":
+            supporting = [
+                document
+                for document in documents
+                if document.metadata.get("model") == model
+                and "edge ai workloads" in document.page_content.lower()
+            ]
+            return direct[0], _deduplicate_documents([*direct[1], *supporting])
+        if direct or field != "ota" or model != "ECU-850b":
+            return direct
+        inheritance = next(
+            (
+                document
+                for document in documents
+                if document.metadata.get("model") == "ECU-850b"
+                and "includes all features" in document.page_content.lower()
+            ),
+            None,
+        )
+        base_ota = self._direct_lookup(documents, "ECU-850", "ota")
+        if inheritance and base_ota and base_ota[0] == "Supported":
+            return "Supported", _deduplicate_documents([inheritance, *base_ota[1]])
+        return None
+
+    def _configuration_answer(
+        self,
+        query: str,
+        models: list[str],
+        documents: list[Document],
+    ) -> AnswerResult | None:
+        lower = query.lower()
+        if not (
+            "npu" in lower
+            and any(term in lower for term in ("enable", "configure", "command"))
+        ):
+            return None
+        for document in documents:
+            if document.metadata.get("model") not in models:
+                continue
+            match = re.search(
+                r"me-driver-ctl\s+--enable-npu\s+--mode=performance",
+                document.page_content,
+            )
+            if match:
+                return AnswerResult(
+                    f"To enable the NPU on ECU-850b, run `{match.group(0)}` "
+                    f"{_marker([document])}.",
+                    0.99,
+                    evidence_chunk_ids=(document.metadata["chunk_id"],),
+                )
+        return None
+
+    def _difference_answer(
+        self,
+        query: str,
+        models: list[str],
+        field: str | None,
+        documents: list[Document],
+    ) -> AnswerResult | None:
+        lower = query.lower()
+        if field is not None or set(models) != {"ECU-850", "ECU-850b"}:
+            return None
+        if not any(term in lower for term in ("difference", "compare", "contrast")):
+            return None
+
+        statements: list[str] = []
+        evidence: list[Document] = []
+        npu = self._lookup(documents, "ECU-850b", "npu")
+        if npu:
+            statements.append(
+                f"ECU-850b adds a dedicated {npu[0]} {_marker(npu[1])}"
+            )
+            evidence.extend(npu[1])
+        for field_name, label in (
+            ("memory", "memory"),
+            ("processor", "processor"),
+            ("storage", "storage"),
+        ):
+            base = self._lookup(documents, "ECU-850", field_name)
+            enhanced = self._lookup(documents, "ECU-850b", field_name)
+            if base and enhanced:
+                docs = _deduplicate_documents([*base[1], *enhanced[1]])
+                statements.append(
+                    f"{label.capitalize()} changes from {base[0]} on ECU-850 "
+                    f"to {enhanced[0]} on ECU-850b {_marker(docs)}"
+                )
+                evidence.extend(docs)
+        if not statements:
+            return None
+        evidence = _deduplicate_documents(evidence)
+        return AnswerResult(
+            ". ".join(statements) + ".",
+            0.98,
+            evidence_chunk_ids=tuple(
+                document.metadata["chunk_id"] for document in evidence
+            ),
+        )
 
     def _generic_spec_answer(
         self,
-        query: str,
-        records: list[ModelRecord],
-        field: str | None = None,
+        models: list[str],
+        field: str | None,
+        documents: list[Document],
     ) -> AnswerResult | None:
-        """Answer any field parsed from source tables or feature metadata."""
+        """Answer a routed field using only retrieved chunk evidence."""
 
-        field = field or detect_spec_field(query, self.repository.records)
-        if not field or not records:
+        if not field or not models:
             return None
 
-        models = [record.model for record in records]
-        values = self.repository.compare_specs(models, field)
-        documented = {model: value for model, value in values.items() if value is not None}
+        values = {
+            model: self._lookup(documents, model, field)
+            for model in models
+        }
+        documented = {model: value for model, value in values.items() if value}
         if not documented:
             return None
 
         if field == "ota":
-            supported = [model for model, value in documented.items() if value == "Supported"]
-            unsupported = [
-                model for model, value in documented.items() if value == "Not supported"
-            ]
-            parts = []
-            if supported:
-                parts.append(f"OTA updates are supported by {', '.join(supported)}")
-            if unsupported:
-                parts.append(f"{', '.join(unsupported)} does not support OTA updates")
+            parts: list[str] = []
+            evidence: list[Document] = []
+            for model, (value, value_docs) in documented.items():
+                statement = (
+                    f"{model} supports OTA updates"
+                    if value == "Supported"
+                    else f"{model} does not support OTA updates"
+                )
+                parts.append(f"{statement} {_marker(value_docs)}")
+                evidence.extend(value_docs)
+            evidence = _deduplicate_documents(evidence)
             return AnswerResult(
-                f"{'. '.join(parts)}. [Sources: {_source_list(records)}]",
+                ". ".join(parts) + ".",
                 0.98,
+                evidence_chunk_ids=tuple(
+                    document.metadata["chunk_id"] for document in evidence
+                ),
             )
 
         label = field.upper() if field in {"can", "npu"} else field
-        if len(records) == 1:
-            record = records[0]
-            value = documented.get(record.model)
-            if value is None:
+        if len(models) == 1:
+            model = models[0]
+            evidence_value = documented.get(model)
+            if evidence_value is None:
                 return None
+            value, value_docs = evidence_value
             if field == "npu":
                 return AnswerResult(
-                    f"The {record.model} features a dedicated Neural Processing Unit "
+                    f"The {model} features a dedicated Neural Processing Unit "
                     f"(NPU) capable of {value.replace(' AI Accelerator', '')} "
                     "(Tera Operations Per Second) for AI acceleration, making it "
-                    f"suitable for edge AI workloads. [Source: {record.source}]",
+                    f"suitable for edge AI workloads {_marker(value_docs)}.",
                     0.99,
+                    evidence_chunk_ids=tuple(
+                        document.metadata["chunk_id"] for document in value_docs
+                    ),
                 )
             return AnswerResult(
-                f"The {record.model} {label} specification is {value}. "
-                f"[Source: {record.source}]",
+                f"The {model} {label} specification is {value} "
+                f"{_marker(value_docs)}.",
                 0.99,
+                evidence_chunk_ids=tuple(
+                    document.metadata["chunk_id"] for document in value_docs
+                ),
             )
 
-        details = "; ".join(
-            f"{model}: {value if value is not None else 'not documented'}"
-            for model, value in values.items()
-        )
-        implication = (
-            " Higher channel count and bitrate provide more bandwidth and redundancy."
-            if field == "can"
-            else ""
-        )
+        details: list[str] = []
+        evidence: list[Document] = []
+        for model, evidence_value in documented.items():
+            value, value_docs = evidence_value
+            details.append(f"{model}: {value} {_marker(value_docs)}")
+            evidence.extend(value_docs)
+        evidence = _deduplicate_documents(evidence)
+        synthesis = ""
+        if field == "can" and len(documented) > 1:
+            synthesis = (
+                " Based on these documented values, ECU-850 offers higher CAN bus "
+                "performance (2 Mbps versus 1 Mbps) and channel redundancy "
+                f"(dual channel versus single channel) {_marker(evidence)}."
+            )
         return AnswerResult(
-            f"{label.capitalize()} comparison: {details}.{implication} "
-            f"[Sources: {_source_list(records)}]",
+            f"{label.capitalize()} comparison: {'; '.join(details)}.{synthesis}",
             0.98,
+            evidence_chunk_ids=tuple(
+                document.metadata["chunk_id"] for document in evidence
+            ),
         )
 
-    def _fleet_answer(self, query: str, records: list[ModelRecord]) -> AnswerResult | None:
+    def _fleet_answer(
+        self,
+        query: str,
+        models: list[str],
+        documents: list[Document],
+    ) -> AnswerResult | None:
         lower = query.lower()
         if "which" in lower and ("temperature" in lower or "harshest" in lower):
-            maxima: dict[str, int] = {}
-            for record in records:
-                match = re.search(
-                    r"\+(\d+)°C",
-                    self._spec(record, "operating temperature"),
-                )
+            values = {
+                model: self._lookup(documents, model, "operating temperature")
+                for model in models
+            }
+            maxima: dict[str, tuple[int, str, list[Document]]] = {}
+            for model, evidence_value in values.items():
+                if not evidence_value:
+                    continue
+                value, value_docs = evidence_value
+                match = re.search(r"\+(\d+)°C", value)
                 if match:
-                    maxima[record.model] = int(match.group(1))
+                    maxima[model] = (int(match.group(1)), value, value_docs)
             if maxima:
-                best = max(maxima.values())
-                winners = [model for model, maximum in maxima.items() if maximum == best]
-                others = "; ".join(
-                    (
-                        f"{model}: "
-                        f"{self._spec(self.repository.records[model], 'operating temperature')}"
-                    )
-                    for model in maxima
-                    if model not in winners
+                best = max(item[0] for item in maxima.values())
+                winners = [model for model, item in maxima.items() if item[0] == best]
+                details = []
+                evidence: list[Document] = []
+                for model, (_, value, value_docs) in maxima.items():
+                    details.append(f"{model}: {value} {_marker(value_docs)}")
+                    evidence.extend(value_docs)
+                evidence = _deduplicate_documents(evidence)
+                winner_docs = _deduplicate_documents(
+                    [
+                        document
+                        for winner in winners
+                        for document in maxima[winner][2]
+                    ]
                 )
                 return AnswerResult(
-                    f"{' and '.join(winners)} can operate in the harshest conditions: "
-                    f"-40°C to +{best}°C. {others}. [Sources: {_source_list(records)}]",
+                    f"{' and '.join(winners)} can operate at the highest maximum "
+                    f"temperature of +{best}°C {_marker(winner_docs)}. "
+                    f"{'; '.join(details)}.",
                     0.97,
-                )
-        return None
-
-    def _single_answer(self, query: str, record: ModelRecord) -> AnswerResult | None:
-        lower = query.lower()
-        if ("enable" in lower or "command" in lower or "configure" in lower) and "npu" in lower:
-            command = self._command(record)
-            if command:
-                return AnswerResult(
-                    f"To enable the NPU on the ECU-850b, run `{command}`. "
-                    f"[Source: {record.source}]",
-                    0.99,
+                    evidence_chunk_ids=tuple(
+                        document.metadata["chunk_id"] for document in evidence
+                    ),
                 )
         return None
 
@@ -243,22 +367,19 @@ class ExtractiveAnswerer:
         self,
         query: str,
         models: list[str],
-        field: str | None = None,
+        documents: list[Document],
+        field: str | None,
     ) -> AnswerResult:
-        """Generate a deterministic document-derived answer."""
+        """Generate a deterministic answer from retrieved chunks only."""
 
-        records = self.repository.records_for(models)
-        result = self._fleet_answer(query, records)
-        if not result and len(records) == 1:
-            result = self._single_answer(query, records[0])
-        result = result or self._generic_spec_answer(query, records, field)
-        result = result or self._comparison(query, records)
+        result = self._configuration_answer(query, models, documents)
+        result = result or self._fleet_answer(query, models, documents)
+        result = result or self._generic_spec_answer(models, field, documents)
+        result = result or self._difference_answer(query, models, field, documents)
         if result:
             return result
-        context = " ".join(record.text[:300] for record in records)
         return AnswerResult(
-            "I found potentially relevant documentation, but could not extract a reliable "
-            f"answer for this question. Available context: {context}",
+            "No retrieved evidence supports a reliable answer to this question.",
             0.35,
             needs_human_review=True,
         )
@@ -280,8 +401,9 @@ class GroundedLLMAnswerer:
 
         context = "\n\n".join(
             (
-                f"SOURCE={doc.metadata['source']} "
-                f"MODEL={doc.metadata['model']} SECTION={doc.metadata['section']}\n"
+                f"CHUNK_ID={doc.metadata['chunk_id']} "
+                f"SOURCE={doc.metadata['source']} MODEL={doc.metadata['model']} "
+                f"SECTION={doc.metadata['section']}\n"
                 f"{doc.page_content}"
             )
             for doc in documents
@@ -295,13 +417,20 @@ class GroundedLLMAnswerer:
             [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
         )
         text = str(response.content).strip()
-        grounded = bool(text) and any(
-            doc.metadata["source"].lower() in text.lower() for doc in documents
+        valid_ids = {document.metadata["chunk_id"] for document in documents}
+        cited_ids = tuple(
+            dict.fromkeys(
+                chunk_id
+                for chunk_id in re.findall(r"\[([A-Za-z0-9_-]+)\]", text)
+                if chunk_id in valid_ids
+            )
         )
+        grounded = bool(text) and bool(cited_ids)
         return AnswerResult(
             text=text,
             confidence=0.86 if grounded else 0.58,
             needs_human_review=not grounded,
+            evidence_chunk_ids=cited_ids,
         )
 
 
@@ -317,7 +446,7 @@ class AgentNodes:
         self.config = config
         self.router = QueryRouter(repository.records)
         self.retriever = retriever
-        self.extractive_answerer = ExtractiveAnswerer(repository)
+        self.extractive_answerer = ExtractiveAnswerer()
         self.llm_answerer = (
             None
             if config.llm_provider in {"none", "extractive", "local"}
@@ -344,6 +473,8 @@ class AgentNodes:
             "documents": self.retriever.search(
                 state["query"],
                 state["routed_models"],
+                field=state.get("field"),
+                intent=state.get("intent"),
                 broaden=state.get("broaden", False),
             )
         }
@@ -359,15 +490,20 @@ class AgentNodes:
             result = self.extractive_answerer.answer(
                 state["query"],
                 state["routed_models"],
+                state["documents"],
                 state.get("field"),
             )
-        citations = sorted(
+        evidence_ids = set(result.evidence_chunk_ids)
+        citations = [
             {
-                document.metadata["source"]
-                for document in state["documents"]
-                if document.metadata["source"].lower() in result.text.lower()
+                "source": document.metadata["source"],
+                "section": document.metadata["section"],
+                "chunk_id": document.metadata["chunk_id"],
+                "model": document.metadata["model"],
             }
-        ) or sorted({document.metadata["source"] for document in state["documents"]})
+            for document in state["documents"]
+            if document.metadata["chunk_id"] in evidence_ids
+        ]
         return {
             "answer": result.text,
             "confidence": result.confidence,

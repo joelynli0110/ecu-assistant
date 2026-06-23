@@ -9,9 +9,11 @@ Answer only from the supplied ECU documentation.
 Rules:
 1. Preserve exact model names, units, ranges, and shell commands.
 2. For comparisons, state each model's value and the engineering implication.
-3. Cite sources inline using [Source: filename, section].
-4. If evidence is missing or ambiguous, say so and request engineering review.
-5. Answer in the same language as the user.
+3. Use only facts present in the retrieved chunks.
+4. Cite every factual claim inline using its exact [chunk_id].
+5. Never cite a chunk that does not support the associated claim.
+6. If evidence is missing or ambiguous, say so and request engineering review.
+7. Answer in the same language as the user.
 """
 
 
@@ -55,4 +57,3 @@ def build_chat_model(config: AgentConfig):
     raise ValueError(
         f"Unsupported LLM provider '{provider}'. Choose none, openai, anthropic, or ollama."
     )
-

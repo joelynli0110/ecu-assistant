@@ -55,6 +55,24 @@ def test_retriever_preserves_both_comparison_models():
     }
 
 
+def test_field_aware_retrieval_returns_the_supporting_chunk():
+    repository = DocumentRepository()
+    retriever = ECURetriever(
+        chunk_records(repository.records),
+        AgentConfig(),
+    )
+
+    documents = retriever.search(
+        "850 storage",
+        ["ECU-850"],
+        field="storage",
+        intent="specification",
+    )
+
+    assert documents[0].metadata["chunk_id"] == "ECU-850-3"
+    assert "16 GB eMMC" in documents[0].page_content
+
+
 def test_lookup_spec_supports_arbitrary_parsed_fields_and_aliases():
     records = DocumentRepository().records
 

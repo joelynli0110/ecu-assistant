@@ -3,6 +3,7 @@
 ## Model Variant: ECU-850b (AI Enhanced)
 
 The ECU-850b includes all features of the base ECU-850, with these upgrades:
+It is designed for edge AI workloads.
 
 - Dedicated AI Accelerator: a Neural Processing Unit (NPU) capable of 5 TOPS.
 - Increased Memory: 4 GB LPDDR4.

@@ -5,6 +5,7 @@ from ecu_assistant.data.loaders import (
     compare_specs,
     detect_spec_field,
     lookup_spec,
+    parse_spec_table,
 )
 from ecu_assistant.data.schemas import AnswerResult, ModelRecord, RouteDecision
 
@@ -16,4 +17,5 @@ __all__ = [
     "compare_specs",
     "detect_spec_field",
     "lookup_spec",
+    "parse_spec_table",
 ]

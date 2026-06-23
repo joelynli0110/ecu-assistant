@@ -42,3 +42,4 @@ class AnswerResult:
     text: str
     confidence: float
     needs_human_review: bool = False
+    evidence_chunk_ids: tuple[str, ...] = ()
