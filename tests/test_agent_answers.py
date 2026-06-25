@@ -201,3 +201,88 @@ def test_no_evidence_returns_no_citations(agent):
     )
     assert result["citations"] == []
     assert "[" not in result["answer"]
+
+
+def test_paraphrased_processor_question_stays_grounded(agent):
+    result = agent.invoke("What silicon and clock rate does the ECU-850b use?")
+
+    assert result["routed_models"] == ["ECU-850b"]
+    assert result["field"] == "processor"
+    assert "Dual-core ARM Cortex-A53" in result["answer"]
+    assert "1.5 GHz" in result["answer"]
+    assert "[ECU-850b-2]" in result["answer"]
+    assert {citation["chunk_id"] for citation in result["citations"]} == {
+        "ECU-850b-2"
+    }
+    assert result["needs_human_review"] is False
+
+
+def test_unknown_domain_question_is_not_mapped_to_capacity(agent):
+    result = agent.invoke("What is the fuel tank capacity for ECU-850?")
+
+    assert result["routed_models"] == ["ECU-850"]
+    assert result["field"] is None
+    assert result["answer"] == (
+        "No retrieved evidence supports a reliable answer to this question."
+    )
+    assert result["citations"] == []
+    assert result["needs_human_review"] is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Can ECU-850 update itself wirelessly?",
+        "Can the ECU-850 receive remote software upgrades without a cable?",
+    ],
+)
+def test_single_model_ota_paraphrases_do_not_route_to_can(agent, question):
+    result = agent.invoke(question)
+
+    assert result["routed_models"] == ["ECU-850"]
+    assert result["field"] == "ota"
+    assert "ECU-850 supports OTA updates" in result["answer"]
+    assert "CAN specification" not in result["answer"]
+    assert {citation["chunk_id"] for citation in result["citations"]} == {
+        "ECU-850-2"
+    }
+    assert {citation["section"] for citation in result["citations"]} == {"Key Features"}
+    assert result["needs_human_review"] is False
+
+
+def test_single_model_inherited_ota_keeps_explicit_scope(agent):
+    result = agent.invoke("Can 850b receive remote software upgrades without a cable?")
+
+    assert result["routed_models"] == ["ECU-850b"]
+    assert result["field"] == "ota"
+    assert "ECU-850b supports OTA updates" in result["answer"]
+    assert "ECU-750" not in result["answer"]
+    assert {citation["chunk_id"] for citation in result["citations"]} == {
+        "ECU-850-2",
+        "ECU-850b-1",
+    }
+    assert result["needs_human_review"] is False
+
+
+def test_wrong_model_question_returns_no_evidence_instead_of_fleet_answer(agent):
+    result = agent.invoke("Does the ECU-650 support OTA?")
+
+    assert result["routed_models"] == []
+    assert result["field"] == "ota"
+    assert result["answer"] == (
+        "No retrieved evidence supports a reliable answer to this question."
+    )
+    assert result["citations"] == []
+    assert result["needs_human_review"] is True
+
+
+def test_mixed_valid_and_wrong_model_question_returns_no_evidence(agent):
+    result = agent.invoke("Compare storage for ECU-650 and ECU-850.")
+
+    assert result["routed_models"] == []
+    assert result["field"] == "storage"
+    assert result["answer"] == (
+        "No retrieved evidence supports a reliable answer to this question."
+    )
+    assert result["citations"] == []
+    assert result["needs_human_review"] is True

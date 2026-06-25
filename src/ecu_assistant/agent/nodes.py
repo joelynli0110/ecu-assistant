@@ -29,6 +29,10 @@ from ecu_assistant.retrieval.retriever import ECURetriever
 class QueryRouter:
     """Route explicit model mentions and infer broad comparison queries."""
 
+    UNKNOWN_MODEL_PATTERN = re.compile(
+        r"\b(?P<prefix>ecu[-_\s]*)?(?P<number>\d{3})(?:[-_\s]*(?P<suffix>[a-z]))?\b",
+        re.IGNORECASE,
+    )
     MODEL_PATTERNS = {
         "ECU-850b": re.compile(
             r"\b(?:ecu[-_\s]*)?850[-_\s]*b\b",
@@ -43,6 +47,18 @@ class QueryRouter:
 
     def __init__(self, records: Mapping[str, ModelRecord] | None = None):
         self.records = records or {}
+
+    @classmethod
+    def _names_unknown_model(cls, query: str) -> bool:
+        for match in cls.UNKNOWN_MODEL_PATTERN.finditer(query):
+            number = match.group("number")
+            suffix = (match.group("suffix") or "").lower()
+            token = f"{number}{suffix}"
+            if token in {"750", "850", "850b", "700", "800"}:
+                continue
+            if match.group("prefix") or suffix:
+                return True
+        return False
 
     @staticmethod
     def _intent(query: str) -> str:
@@ -64,6 +80,9 @@ class QueryRouter:
     def route(self, query: str) -> RouteDecision:
         """Select documents using model mentions, series mentions, and intent."""
 
+        intent = self._intent(query)
+        field = detect_spec_field(query, self.records)
+        unknown_model = self._names_unknown_model(query)
         models = [
             model for model, pattern in self.MODEL_PATTERNS.items() if pattern.search(query)
         ]
@@ -72,6 +91,13 @@ class QueryRouter:
             models.append("ECU-750")
         if not models and ("ecu-800" in lower or "800 series" in lower):
             models.extend(["ECU-850", "ECU-850b"])
+        if unknown_model:
+            return RouteDecision(
+                models=[],
+                intent=intent,
+                field=field,
+                reason="The query names an unsupported ECU model.",
+            )
 
         if not models:
             models = list(ALL_MODELS)
@@ -81,8 +107,8 @@ class QueryRouter:
             reason = f"Explicit model or series references selected: {', '.join(models)}."
         return RouteDecision(
             models=models,
-            intent=self._intent(query),
-            field=detect_spec_field(query, self.records),
+            intent=intent,
+            field=field,
             reason=reason,
         )
 
@@ -94,6 +120,9 @@ def _deduplicate_documents(documents: list[Document]) -> list[Document]:
 def _marker(documents: list[Document]) -> str:
     chunk_ids = [document.metadata["chunk_id"] for document in documents]
     return f"[{', '.join(chunk_ids)}]"
+
+
+OTA_PATTERN = re.compile(r"\bota\b|over[-\s]the[-\s]air", re.IGNORECASE)
 
 
 class ExtractiveAnswerer:
@@ -117,9 +146,9 @@ class ExtractiveAnswerer:
             if document.metadata.get("model") != model:
                 continue
             text = document.page_content.lower()
-            if ("ota" in text or "over-the-air" in text) and "not supported" in text:
+            if OTA_PATTERN.search(document.page_content) and "not supported" in text:
                 return "Not supported", [document]
-            if "ota" in text or "over-the-air" in text:
+            if OTA_PATTERN.search(document.page_content):
                 return "Supported", [document]
         return None
 

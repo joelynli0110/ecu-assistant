@@ -106,3 +106,11 @@ def test_field_detection_uses_aliases_and_dynamic_document_fields():
         "processor"
     )
     assert detect_spec_field("What network interface is on ECU-850?", records) == "ethernet"
+
+
+def test_field_detection_handles_modal_can_and_unknown_capacity():
+    records = DocumentRepository().records
+
+    assert detect_spec_field("Can ECU-850 update itself wirelessly?", records) == "ota"
+    assert detect_spec_field("Can ECU-850 communicate on CAN?", records) == "can"
+    assert detect_spec_field("What is the fuel tank capacity for ECU-850?", records) is None

@@ -24,7 +24,7 @@ FIELD_ALIASES = {
     "memory": {"memory", "memory capacity", "ram", "ram capacity", "sram", "lpddr4"},
     "storage": {
         "storage", "storage capacity", "flash", "internal flash", "emmc",
-        "flash memory", "disk", "disk space", "disk capacity", "capacity",
+        "flash memory", "disk", "disk space", "disk capacity",
     },
     "can": {
         "can", "can bus", "can interface", "can speed", "can bus speed",
@@ -50,9 +50,15 @@ FIELD_ALIASES = {
     "ota": {
         "ota", "over the air", "over-the-air", "ota update", "ota updates",
         "wireless update", "wireless updates", "firmware update",
-        "firmware updates", "remote update", "remote updates",
+        "firmware updates", "firmware over the air", "remote update",
+        "remote updates", "remote software update", "remote software updates",
+        "remote software upgrade", "remote software upgrades", "software update",
+        "software updates", "software upgrade", "software upgrades", "wirelessly",
+        "without a cable",
     },
 }
+
+OTA_PATTERN = re.compile(r"\bota\b|over[-\s]the[-\s]air", re.IGNORECASE)
 
 
 def normalize_text(text: str) -> str:
@@ -96,6 +102,15 @@ def normalize_field(field: str) -> str:
     return FEATURE_ALIASES.get(normalized, normalized)
 
 
+def _alias_matches_query(alias: str, query: str, normalized_query: str) -> bool:
+    normalized_alias = re.sub(r"[^a-z0-9]+", " ", alias.lower()).strip()
+    if not normalized_alias:
+        return False
+    if normalized_alias == "can":
+        return bool(re.search(r"\bCAN\b", query))
+    return f" {normalized_alias} " in normalized_query
+
+
 def detect_spec_field(
     query: str,
     records: Mapping[str, ModelRecord],
@@ -116,7 +131,7 @@ def detect_spec_field(
     for canonical, aliases in candidates.items():
         for alias in aliases:
             normalized_alias = re.sub(r"[^a-z0-9]+", " ", alias.lower()).strip()
-            if normalized_alias and f" {normalized_alias} " in normalized_query:
+            if _alias_matches_query(alias, query, normalized_query):
                 matches.append((len(normalized_alias), canonical))
     return max(matches, default=(0, ""))[1] or None
 
@@ -174,7 +189,7 @@ class DocumentRepository:
         for model, text in self._texts.items():
             lower = text.lower()
             ota: bool | None = None
-            if "ota" in lower or "over-the-air" in lower:
+            if OTA_PATTERN.search(text):
                 ota = "not supported" not in lower
             if model == "ECU-850b" and "includes all features" in lower:
                 ota = True

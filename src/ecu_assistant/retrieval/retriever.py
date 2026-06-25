@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from langchain_core.documents import Document
@@ -11,6 +12,8 @@ from ecu_assistant.config import AgentConfig
 from ecu_assistant.data.loaders import parse_spec_table
 from ecu_assistant.retrieval.embeddings import build_embeddings
 from ecu_assistant.retrieval.vector_store import build_vector_store
+
+OTA_PATTERN = re.compile(r"\bota\b|over[-\s]the[-\s]air", re.IGNORECASE)
 
 
 class ECURetriever:
@@ -42,8 +45,7 @@ class ECURetriever:
             return True
         if field == "ota":
             return (
-                "over-the-air" in text
-                or "ota" in text
+                OTA_PATTERN.search(document.page_content) is not None
                 or "includes all features" in text
             )
         if intent == "configuration":
@@ -101,10 +103,7 @@ class ECURetriever:
                     doc
                     for doc in self.documents
                     if doc.metadata.get("model") == "ECU-850"
-                    and (
-                        "over-the-air" in doc.page_content.lower()
-                        or "ota" in doc.page_content.lower()
-                    )
+                    and OTA_PATTERN.search(doc.page_content) is not None
                 ),
                 None,
             )

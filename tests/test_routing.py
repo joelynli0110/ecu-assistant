@@ -57,3 +57,35 @@ def test_850b_variants_do_not_match_ecu_850():
         route = router.route(query)
         assert route.models == ["ECU-850b"]
         assert route.field == "storage"
+
+
+def test_lowercase_can_modal_does_not_route_to_can_bus():
+    route = QueryRouter().route("Can ECU-850 update itself wirelessly?")
+
+    assert route.models == ["ECU-850"]
+    assert route.intent == "specification"
+    assert route.field == "ota"
+
+
+def test_wrong_explicit_model_does_not_expand_to_all_models():
+    route = QueryRouter().route("Does the ECU-650 support OTA?")
+
+    assert route.models == []
+    assert route.intent == "specification"
+    assert route.field == "ota"
+
+
+def test_mixed_valid_and_wrong_models_are_not_partially_answered():
+    route = QueryRouter().route("Compare storage for ECU-650 and ECU-850.")
+
+    assert route.models == []
+    assert route.intent == "comparison"
+    assert route.field == "storage"
+
+
+def test_unknown_variant_does_not_fall_back_to_base_model():
+    route = QueryRouter().route("850c storage")
+
+    assert route.models == []
+    assert route.intent == "specification"
+    assert route.field == "storage"
