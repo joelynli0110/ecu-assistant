@@ -10,36 +10,192 @@ from typing import Any
 
 from ecu_assistant.agent.graph import ECUEngineeringAgent
 from ecu_assistant.config import AgentConfig
-from ecu_assistant.evaluation.golden_set import load_golden_set
-from ecu_assistant.evaluation.metrics import aggregate_metrics, answer_recall
+from ecu_assistant.evaluation.golden_set import GoldenQuestion, load_golden_set
+from ecu_assistant.evaluation.metrics import (
+    aggregate_metrics,
+    answer_recall,
+    combined_pass,
+    set_scores,
+    unique_values,
+)
+
+
+def _run_agent_with_trace(
+    agent: ECUEngineeringAgent,
+    query: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Run the agent and return both the public response and retrieved chunk IDs."""
+
+    clean_query = query.strip()
+    if not clean_query:
+        return agent.invoke(query), []
+    state = agent.graph.invoke({"query": clean_query})
+    response = {
+        "answer": state["answer"],
+        "confidence": round(float(state["confidence"]), 3),
+        "citations": state["citations"],
+        "routed_models": state["routed_models"],
+        "intent": state["intent"],
+        "field": state.get("field"),
+        "needs_human_review": state["needs_human_review"],
+    }
+    retrieved_chunk_ids = unique_values(
+        [
+            document.metadata["chunk_id"]
+            for document in state.get("documents", [])
+        ]
+    )
+    return response, retrieved_chunk_ids
+
+
+def _routing_scores(
+    item: GoldenQuestion,
+    response: dict[str, Any],
+) -> dict[str, bool | None]:
+    routing_labelled = item.expected_models is not None or item.expected_intent is not None
+    model_correct = (
+        response["routed_models"] == list(item.expected_models)
+        if item.expected_models is not None
+        else None
+    )
+    intent_correct = (
+        response["intent"] == item.expected_intent
+        if item.expected_intent is not None
+        else None
+    )
+    field_correct = (
+        response.get("field") == item.expected_field
+        if routing_labelled
+        else None
+    )
+    checks = [
+        check
+        for check in (model_correct, intent_correct, field_correct)
+        if check is not None
+    ]
+    return {
+        "model_routing_correct": model_correct,
+        "intent_correct": intent_correct,
+        "field_correct": field_correct,
+        "routing_correct": all(checks) if checks else None,
+    }
+
+
+def _retrieval_scores(
+    expected_chunk_ids: tuple[str, ...] | None,
+    retrieved_chunk_ids: list[str],
+) -> dict[str, float | bool | None]:
+    if expected_chunk_ids is None or not expected_chunk_ids:
+        return {
+            "retrieval_correct": None,
+            "retrieval_precision": None,
+            "retrieval_recall": None,
+        }
+    scores = set_scores(retrieved_chunk_ids, expected_chunk_ids)
+    return {
+        "retrieval_correct": scores["recall"] == 1.0,
+        "retrieval_precision": scores["precision"],
+        "retrieval_recall": scores["recall"],
+    }
+
+
+def _citation_scores(
+    expected_chunk_ids: tuple[str, ...] | None,
+    citation_chunk_ids: list[str],
+) -> dict[str, float | bool | None]:
+    if expected_chunk_ids is None:
+        return {
+            "citation_correct": None,
+            "citation_precision": None,
+            "citation_recall": None,
+            "citation_f1": None,
+        }
+    scores = set_scores(citation_chunk_ids, expected_chunk_ids)
+    return {
+        "citation_correct": bool(scores["exact_match"]),
+        "citation_precision": scores["precision"],
+        "citation_recall": scores["recall"],
+        "citation_f1": scores["f1"],
+    }
+
+
+def evaluate_response(
+    item: GoldenQuestion,
+    response: dict[str, Any],
+    retrieved_chunk_ids: list[str],
+    answer_recall_threshold: float = 0.50,
+) -> dict[str, Any]:
+    """Evaluate one response against answer, routing, evidence, and abstention labels."""
+
+    recall = answer_recall(response["answer"], item.expected_answer)
+    citation_chunk_ids = unique_values(
+        [citation["chunk_id"] for citation in response["citations"]]
+    )
+    predicted_abstain = bool(response["needs_human_review"])
+    abstention_correct = (
+        predicted_abstain == item.expected_abstain
+        if item.expected_abstain is not None
+        else None
+    )
+    row: dict[str, Any] = {
+        "question_id": item.question_id,
+        "category": item.category,
+        "question": item.question,
+        "answer": response["answer"],
+        "expected_answer": item.expected_answer,
+        "fact_recall": round(recall, 4),
+        "answer_correct": recall >= answer_recall_threshold,
+        "confidence": response["confidence"],
+        "needs_human_review": response["needs_human_review"],
+        "expected_models": (
+            list(item.expected_models) if item.expected_models is not None else None
+        ),
+        "routed_models": response["routed_models"],
+        "expected_intent": item.expected_intent,
+        "intent": response["intent"],
+        "expected_field": item.expected_field,
+        "field": response.get("field"),
+        "expected_chunk_ids": (
+            list(item.expected_citation_chunk_ids)
+            if item.expected_citation_chunk_ids is not None
+            else None
+        ),
+        "retrieved_chunk_ids": retrieved_chunk_ids,
+        "citation_chunk_ids": citation_chunk_ids,
+        "expected_abstain": item.expected_abstain,
+        "predicted_abstain": predicted_abstain,
+        "abstention_correct": abstention_correct,
+    }
+    row.update(_routing_scores(item, response))
+    row.update(_retrieval_scores(item.expected_citation_chunk_ids, retrieved_chunk_ids))
+    row.update(_citation_scores(item.expected_citation_chunk_ids, citation_chunk_ids))
+    row["passed"] = combined_pass(row)
+    return row
 
 
 def evaluate_golden_set(
     agent: ECUEngineeringAgent,
     csv_path: Path | None = None,
-    pass_threshold: float = 0.50,
+    answer_recall_threshold: float = 0.50,
+    pass_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate all golden questions and return aggregate and row-level metrics."""
 
+    if pass_threshold is not None:
+        answer_recall_threshold = pass_threshold
     rows: list[dict[str, Any]] = []
     for item in load_golden_set(csv_path):
         started = time.perf_counter()
-        response = agent.invoke(item.question)
+        response, retrieved_chunk_ids = _run_agent_with_trace(agent, item.question)
         latency = time.perf_counter() - started
-        recall = answer_recall(response["answer"], item.expected_answer)
-        rows.append(
-            {
-                "question_id": item.question_id,
-                "question": item.question,
-                "answer": response["answer"],
-                "expected_answer": item.expected_answer,
-                "fact_recall": round(recall, 4),
-                "latency_seconds": round(latency, 4),
-                "confidence": response["confidence"],
-                "needs_human_review": response["needs_human_review"],
-                "passed": recall >= pass_threshold,
-            }
+        row = evaluate_response(
+            item,
+            response,
+            retrieved_chunk_ids,
+            answer_recall_threshold,
         )
+        row["latency_seconds"] = round(latency, 4)
+        rows.append(row)
     return {"metrics": aggregate_metrics(rows), "rows": rows}
 
 

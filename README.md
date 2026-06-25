@@ -273,15 +273,17 @@ pytest
 evaluate-local
 ```
 
-The evaluator writes `evaluation-results.json` with pass rate, expected-fact
-recall, mean/p95 latency, confidence, review decisions, and generated answers.
+The evaluator writes `evaluation-results.json` with row-level labels and flat
+metrics for answer recall, routing accuracy, retrieval hit rate, citation exact
+match, abstention precision/recall/F1, latency, confidence, review decisions,
+and generated answers.
 
 Release gates:
 
-- at least 8/10 golden questions pass;
+- all labelled answer, routing, retrieval, citation, and abstention checks pass;
 - p95 latency below 10 seconds;
 - pylint above 8.5/10;
-- unsupported questions are not returned with high confidence.
+- unsupported questions abstain without citations.
 
 Domain experts should review positive/negative facts, inherited features,
 ambiguous models, comparisons, and exact commands. New document revisions should
