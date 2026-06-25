@@ -20,5 +20,6 @@ class AgentState(TypedDict, total=False):
     confidence: float
     citations: list[dict[str, str]]
     needs_human_review: bool
+    review_reason: str
     retrieval_attempt: int
     broaden: bool

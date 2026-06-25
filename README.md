@@ -60,7 +60,7 @@ flowchart LR
     G -->|No| F["Document-derived offline answerer"]
     L --> A["Confidence and citation assessment"]
     F --> A
-    A -->|Low confidence| B["Broaden once to all documents"]
+    A -->|Low confidence| B["Broaden once within routed scope"]
     B --> V
     A -->|Complete| O["Structured response"]
 ```
@@ -90,7 +90,8 @@ Key decisions:
 - Unsupported questions return no citations.
 - Generic `lookup_spec` and `compare_specs` operate on any parsed document field.
 - LLM and embedding providers are configured independently.
-- Low-confidence output retries once, then requests human review.
+- Low-confidence output retries once within the routed scope, then requests human review.
+- Confidence is capped below the review threshold when an answer has no supporting citations.
 - The offline answerer derives facts from the documents.
 
 ## Installation
@@ -135,6 +136,7 @@ Copy `.env.example` or export:
 | `ME_ECU_EMBEDDING_BASE_URL` | Optional embedding URL |
 | `ME_ECU_RETRIEVAL_K` | Retrieved chunks; default `4` |
 | `ME_ECU_LOW_CONFIDENCE_THRESHOLD` | Review threshold; default `0.55` |
+| `ME_ECU_HIGH_CONFIDENCE_THRESHOLD` | Evaluation high-confidence cutoff; default `0.90` |
 
 Provider integrations read standard credentials such as `OPENAI_API_KEY` and
 `ANTHROPIC_API_KEY`.
@@ -193,7 +195,8 @@ Response:
   "routed_models": ["ECU-850"],
   "intent": "specification",
   "field": "memory",
-  "needs_human_review": false
+  "needs_human_review": false,
+  "review_reason": "grounded"
 }
 ```
 
@@ -230,8 +233,10 @@ If no retrieved chunk supports the requested fact, the response is:
 ```json
 {
   "answer": "No retrieved evidence supports a reliable answer to this question.",
+  "confidence": 0.35,
   "citations": [],
-  "needs_human_review": true
+  "needs_human_review": true,
+  "review_reason": "no_supporting_evidence"
 }
 ```
 
@@ -275,12 +280,14 @@ evaluate-local
 
 The evaluator writes `evaluation-results.json` with row-level labels and flat
 metrics for answer recall, routing accuracy, retrieval hit rate, citation exact
-match, abstention precision/recall/F1, latency, confidence, review decisions,
-and generated answers.
+match, abstention precision/recall/F1, high-confidence error rate, latency,
+confidence, review decisions, and generated answers.
+The high-confidence cutoff comes from `ME_ECU_HIGH_CONFIDENCE_THRESHOLD`.
 
 Release gates:
 
 - all labelled answer, routing, retrieval, citation, and abstention checks pass;
+- high-confidence error rate remains measurable and near zero;
 - p95 latency below 10 seconds;
 - pylint above 8.5/10;
 - unsupported questions abstain without citations.

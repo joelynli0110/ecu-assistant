@@ -7,6 +7,10 @@ from collections.abc import Mapping, Sequence
 from statistics import mean
 from typing import Any
 
+from ecu_assistant.config import AgentConfig
+
+DEFAULT_HIGH_CONFIDENCE_THRESHOLD = AgentConfig.high_confidence_threshold
+
 STOPWORDS = {
     "a", "all", "also", "an", "and", "are", "as", "at", "be", "by",
     "capabilities", "capability", "capable", "conditions", "dedicated",
@@ -132,7 +136,32 @@ def _binary_metrics(
     }
 
 
-def aggregate_metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
+def _high_confidence_metrics(
+    rows: list[dict[str, Any]],
+    high_confidence_threshold: float,
+) -> dict[str, float | int]:
+    high_confidence_rows = [
+        row
+        for row in rows
+        if float(row.get("confidence", 0.0)) >= high_confidence_threshold
+    ]
+    high_confidence_errors = [
+        row for row in high_confidence_rows if not bool(row.get("passed", False))
+    ]
+    count = len(high_confidence_rows)
+    errors = len(high_confidence_errors)
+    return {
+        "high_confidence_threshold": high_confidence_threshold,
+        "high_confidence_count": count,
+        "high_confidence_errors": errors,
+        "high_confidence_error_rate": errors / count if count else 0.0,
+    }
+
+
+def aggregate_metrics(
+    rows: list[dict[str, Any]],
+    high_confidence_threshold: float = DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
+) -> dict[str, float | int]:
     """Aggregate answer, routing, retrieval, citation, abstention, and latency metrics."""
 
     if not rows:
@@ -157,11 +186,16 @@ def aggregate_metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
             "abstention_precision": 0.0,
             "abstention_recall": 0.0,
             "abstention_f1": 0.0,
+            "high_confidence_threshold": high_confidence_threshold,
+            "high_confidence_count": 0,
+            "high_confidence_errors": 0,
+            "high_confidence_error_rate": 0.0,
             "mean_latency_seconds": 0.0,
             "p95_latency_seconds": 0.0,
         }
     latencies = sorted(float(row["latency_seconds"]) for row in rows)
     abstention = _binary_metrics(rows, "expected_abstain", "predicted_abstain")
+    high_confidence = _high_confidence_metrics(rows, high_confidence_threshold)
     return {
         "questions": len(rows),
         "passed": sum(bool(row["passed"]) for row in rows),
@@ -188,6 +222,14 @@ def aggregate_metrics(rows: list[dict[str, Any]]) -> dict[str, float | int]:
         "abstention_false_negative": int(abstention["false_negative"]),
         "abstention_true_negative": int(abstention["true_negative"]),
         "abstention_support": int(abstention["support"]),
+        "high_confidence_threshold": float(
+            high_confidence["high_confidence_threshold"]
+        ),
+        "high_confidence_count": int(high_confidence["high_confidence_count"]),
+        "high_confidence_errors": int(high_confidence["high_confidence_errors"]),
+        "high_confidence_error_rate": float(
+            high_confidence["high_confidence_error_rate"]
+        ),
         "mean_latency_seconds": mean(latencies),
         "p95_latency_seconds": latencies[max(0, int(len(latencies) * 0.95) - 1)],
     }

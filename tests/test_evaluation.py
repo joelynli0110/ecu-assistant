@@ -1,6 +1,7 @@
 """Evaluation metric tests."""
 
 from ecu_assistant.agent.graph import ECUEngineeringAgent
+from ecu_assistant.config import AgentConfig
 from ecu_assistant.evaluation.golden_set import GoldenQuestion
 from ecu_assistant.evaluation.metrics import aggregate_metrics
 from ecu_assistant.evaluation.run_eval import evaluate_golden_set, evaluate_response
@@ -36,6 +37,79 @@ def test_pass_requires_routing_and_citations_not_only_fact_recall():
     assert row["retrieval_correct"] is False
     assert row["citation_correct"] is False
     assert row["passed"] is False
+
+
+def test_high_confidence_error_rate_counts_failed_high_confidence_rows():
+    rows = [
+        {
+            "passed": False,
+            "confidence": 0.99,
+            "fact_recall": 1.0,
+            "latency_seconds": 0.01,
+            "answer_correct": True,
+            "routing_correct": False,
+            "retrieval_correct": False,
+            "citation_correct": False,
+            "expected_abstain": False,
+            "predicted_abstain": False,
+        },
+        {
+            "passed": True,
+            "confidence": 0.98,
+            "fact_recall": 1.0,
+            "latency_seconds": 0.01,
+            "answer_correct": True,
+            "routing_correct": True,
+            "retrieval_correct": True,
+            "citation_correct": True,
+            "expected_abstain": False,
+            "predicted_abstain": False,
+        },
+        {
+            "passed": False,
+            "confidence": 0.35,
+            "fact_recall": 0.0,
+            "latency_seconds": 0.01,
+            "answer_correct": False,
+            "routing_correct": True,
+            "retrieval_correct": True,
+            "citation_correct": False,
+            "expected_abstain": False,
+            "predicted_abstain": True,
+        },
+    ]
+
+    metrics = aggregate_metrics(rows)
+
+    assert metrics["high_confidence_count"] == 2
+    assert metrics["high_confidence_errors"] == 1
+    assert metrics["high_confidence_error_rate"] == 0.5
+    assert metrics["high_confidence_threshold"] == 0.9
+
+
+def test_high_confidence_threshold_can_be_overridden_in_metrics():
+    rows = [
+        {
+            "passed": False,
+            "confidence": 0.85,
+            "fact_recall": 1.0,
+            "latency_seconds": 0.01,
+            "answer_correct": True,
+            "routing_correct": False,
+            "retrieval_correct": False,
+            "citation_correct": False,
+            "expected_abstain": False,
+            "predicted_abstain": False,
+        }
+    ]
+
+    default_metrics = aggregate_metrics(rows)
+    custom_metrics = aggregate_metrics(rows, high_confidence_threshold=0.8)
+
+    assert default_metrics["high_confidence_count"] == 0
+    assert custom_metrics["high_confidence_threshold"] == 0.8
+    assert custom_metrics["high_confidence_count"] == 1
+    assert custom_metrics["high_confidence_errors"] == 1
 
 
 def test_aggregate_metrics_reports_classification_scores():
@@ -103,6 +177,7 @@ def test_aggregate_metrics_reports_classification_scores():
     assert metrics["abstention_precision"] == 1
     assert metrics["abstention_recall"] == 1
     assert metrics["abstention_f1"] == 1
+    assert metrics["high_confidence_error_rate"] == 0
 
 
 def test_golden_evaluation_outputs_classification_metrics():
@@ -116,3 +191,18 @@ def test_golden_evaluation_outputs_classification_metrics():
     assert metrics["citation_exact_match_rate"] == 1
     assert metrics["abstention_true_positive"] == 3
     assert metrics["abstention_support"] == 13
+    assert metrics["high_confidence_errors"] == 0
+    assert metrics["high_confidence_error_rate"] == 0
+    assert metrics["high_confidence_threshold"] == 0.9
+
+
+def test_golden_evaluation_uses_agent_configured_high_confidence_threshold():
+    agent = ECUEngineeringAgent(AgentConfig(high_confidence_threshold=0.8))
+
+    result = evaluate_golden_set(agent)
+
+    assert result["metrics"]["high_confidence_threshold"] == 0.8
+    assert all(
+        row["high_confidence"] == (row["confidence"] >= 0.8)
+        for row in result["rows"]
+    )

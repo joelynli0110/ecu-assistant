@@ -9,6 +9,11 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ecu_assistant.agent.confidence import (
+    NO_EVIDENCE_ANSWER,
+    ConfidenceInputs,
+    assess_confidence,
+)
 from ecu_assistant.agent.prompts import SYSTEM_PROMPT, build_chat_model
 from ecu_assistant.agent.state import AgentState
 from ecu_assistant.config import AgentConfig
@@ -408,7 +413,7 @@ class ExtractiveAnswerer:
         if result:
             return result
         return AnswerResult(
-            "No retrieved evidence supports a reliable answer to this question.",
+            NO_EVIDENCE_ANSWER,
             0.35,
             needs_human_review=True,
         )
@@ -543,16 +548,20 @@ class AgentNodes:
     def assess_confidence(self, state: AgentState) -> dict[str, Any]:
         """Apply confidence and human-review policy."""
 
-        answer = state.get("answer", "")
-        confidence = state.get("confidence", 0.0)
-        if not re.search(r"\d|supported|not support|document", answer, re.I):
-            confidence = min(confidence, 0.4)
+        assessment = assess_confidence(
+            ConfidenceInputs(
+                answer=state.get("answer", ""),
+                base_confidence=state.get("confidence", 0.0),
+                citations=state.get("citations", []),
+                routed_models=state.get("routed_models", []),
+                upstream_review_required=state.get("needs_human_review", False),
+                low_confidence_threshold=self.config.low_confidence_threshold,
+            )
+        )
         return {
-            "confidence": confidence,
-            "needs_human_review": (
-                confidence < self.config.low_confidence_threshold
-                or state.get("needs_human_review", False)
-            ),
+            "confidence": assessment.confidence,
+            "needs_human_review": assessment.needs_human_review,
+            "review_reason": assessment.review_reason,
         }
 
     def after_assessment(self, state: AgentState) -> str:
@@ -561,6 +570,7 @@ class AgentNodes:
         if (
             state.get("confidence", 0.0) < self.config.low_confidence_threshold
             and state.get("retrieval_attempt", 0) == 0
+            and bool(state.get("routed_models", []))
         ):
             return "broaden"
         return "finish"

@@ -21,6 +21,7 @@ class AgentConfig:
     retrieval_k: int = 4
     temperature: float = 0.0
     low_confidence_threshold: float = 0.55
+    high_confidence_threshold: float = 0.90
 
     @classmethod
     def from_env(cls, docs_dir: str | Path | None = None) -> "AgentConfig":
@@ -40,5 +41,7 @@ class AgentConfig:
             low_confidence_threshold=float(
                 os.getenv("ME_ECU_LOW_CONFIDENCE_THRESHOLD", "0.55")
             ),
+            high_confidence_threshold=float(
+                os.getenv("ME_ECU_HIGH_CONFIDENCE_THRESHOLD", "0.90")
+            ),
         )
-

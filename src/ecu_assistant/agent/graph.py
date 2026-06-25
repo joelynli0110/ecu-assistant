@@ -57,6 +57,7 @@ class ECUEngineeringAgent:
                 "intent": "invalid",
                 "field": None,
                 "needs_human_review": True,
+                "review_reason": "empty_query",
             }
         state = self.graph.invoke({"query": clean_query})
         return {
@@ -67,4 +68,5 @@ class ECUEngineeringAgent:
             "intent": state["intent"],
             "field": state.get("field"),
             "needs_human_review": state["needs_human_review"],
+            "review_reason": state.get("review_reason", "grounded"),
         }

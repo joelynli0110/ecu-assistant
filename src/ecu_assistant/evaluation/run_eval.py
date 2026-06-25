@@ -12,6 +12,7 @@ from ecu_assistant.agent.graph import ECUEngineeringAgent
 from ecu_assistant.config import AgentConfig
 from ecu_assistant.evaluation.golden_set import GoldenQuestion, load_golden_set
 from ecu_assistant.evaluation.metrics import (
+    DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
     aggregate_metrics,
     answer_recall,
     combined_pass,
@@ -38,6 +39,7 @@ def _run_agent_with_trace(
         "intent": state["intent"],
         "field": state.get("field"),
         "needs_human_review": state["needs_human_review"],
+        "review_reason": state.get("review_reason", "grounded"),
     }
     retrieved_chunk_ids = unique_values(
         [
@@ -124,6 +126,7 @@ def evaluate_response(
     response: dict[str, Any],
     retrieved_chunk_ids: list[str],
     answer_recall_threshold: float = 0.50,
+    high_confidence_threshold: float = DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
 ) -> dict[str, Any]:
     """Evaluate one response against answer, routing, evidence, and abstention labels."""
 
@@ -146,7 +149,9 @@ def evaluate_response(
         "fact_recall": round(recall, 4),
         "answer_correct": recall >= answer_recall_threshold,
         "confidence": response["confidence"],
+        "high_confidence": response["confidence"] >= high_confidence_threshold,
         "needs_human_review": response["needs_human_review"],
+        "review_reason": response.get("review_reason", "grounded"),
         "expected_models": (
             list(item.expected_models) if item.expected_models is not None else None
         ),
@@ -193,10 +198,17 @@ def evaluate_golden_set(
             response,
             retrieved_chunk_ids,
             answer_recall_threshold,
+            agent.config.high_confidence_threshold,
         )
         row["latency_seconds"] = round(latency, 4)
         rows.append(row)
-    return {"metrics": aggregate_metrics(rows), "rows": rows}
+    return {
+        "metrics": aggregate_metrics(
+            rows,
+            high_confidence_threshold=agent.config.high_confidence_threshold,
+        ),
+        "rows": rows,
+    }
 
 
 def write_evaluation(result: dict[str, Any], output_path: Path) -> None:
