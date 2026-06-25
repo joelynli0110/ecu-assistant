@@ -19,6 +19,10 @@ from ecu_assistant.evaluation.metrics import (
     set_scores,
     unique_values,
 )
+from ecu_assistant.reproducibility import (
+    build_reproducibility_metadata,
+    flatten_reproducibility_params,
+)
 
 
 def _run_agent_with_trace(
@@ -202,11 +206,13 @@ def evaluate_golden_set(
         )
         row["latency_seconds"] = round(latency, 4)
         rows.append(row)
+    metadata = build_reproducibility_metadata(agent.config, csv_path)
     return {
         "metrics": aggregate_metrics(
             rows,
             high_confidence_threshold=agent.config.high_confidence_threshold,
         ),
+        "metadata": metadata,
         "rows": rows,
     }
 
@@ -252,7 +258,25 @@ def mlflow_main() -> None:
     write_evaluation(result, output_path)
     mlflow.set_experiment(os.getenv("ME_ECU_MLFLOW_EXPERIMENT", "ecu-assistant"))
     with mlflow.start_run(run_name="evaluate-ecu-assistant"):
+        reproducibility_params = flatten_reproducibility_params(result["metadata"])
         mlflow.log_metrics(result["metrics"])
+        mlflow.log_params(reproducibility_params)
+        mlflow.set_tags(
+            {
+                "task": "evaluation",
+                "domain": "automotive-ecu",
+                "package": "ecu-assistant",
+                "git_sha": reproducibility_params["git_sha"],
+                "document_hash": reproducibility_params["document_hash"],
+                "evaluation_set_version": reproducibility_params[
+                    "evaluation_set_version"
+                ],
+            }
+        )
+        mlflow.log_dict(result["metadata"], "reproducibility.json")
+        mlflow.log_dict(result["metadata"]["config"], "config.json")
+        mlflow.log_dict(result["metadata"]["documents"], "document_manifest.json")
+        mlflow.log_dict(result["metadata"]["evaluation_set"], "evaluation_set.json")
         mlflow.log_artifact(str(output_path))
     print(result["metrics"])
 

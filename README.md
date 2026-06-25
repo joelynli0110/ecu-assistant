@@ -314,8 +314,11 @@ log-model
 ```
 
 The run records model signature, packaged documents, serving dependencies,
-provider/retrieval metadata, package version, and optional model registration via
-`ME_ECU_REGISTERED_MODEL_NAME`.
+provider/retrieval metadata, package version, git SHA, document hash, runtime
+configuration, evaluation-set version, and optional model registration via
+`ME_ECU_REGISTERED_MODEL_NAME`. Full reproducibility details are logged as
+`reproducibility.json`, `config.json`, `document_manifest.json`, and
+`evaluation_set.json`.
 
 ```python
 import mlflow
@@ -332,6 +335,9 @@ Log golden-set metrics with:
 ```bash
 evaluate-mlflow
 ```
+
+Evaluation runs log the same git, document, configuration, and evaluation-set
+metadata alongside the metric values.
 
 ## Validation and monitoring strategy
 

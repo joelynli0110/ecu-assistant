@@ -9,6 +9,10 @@ from pathlib import Path
 from ecu_assistant import __version__
 from ecu_assistant.config import AgentConfig
 from ecu_assistant.mlflow_model.pyfunc_model import ECUEngineeringAssistantModel
+from ecu_assistant.reproducibility import (
+    build_reproducibility_metadata,
+    flatten_reproducibility_params,
+)
 
 
 def _require_mlflow():
@@ -43,6 +47,7 @@ def log_model() -> str:
     mlflow.set_experiment(os.getenv("ME_ECU_MLFLOW_EXPERIMENT", "ecu-assistant"))
     registered_name = os.getenv("ME_ECU_REGISTERED_MODEL_NAME")
     config = AgentConfig.from_env()
+    reproducibility = build_reproducibility_metadata(config)
     package_root = Path(__file__).resolve().parents[1]
     input_example = pd.DataFrame({"query": ["How much RAM does the ECU-850 have?"]})
     output_example = [
@@ -61,19 +66,28 @@ def log_model() -> str:
             "intent": "specification",
             "field": "memory",
             "needs_human_review": False,
+            "review_reason": "grounded",
         }
     ]
 
     with mlflow.start_run(run_name="build-ecu-assistant") as run:
+        reproducibility_params = flatten_reproducibility_params(reproducibility)
         mlflow.log_params(
             {
                 "agent_framework": "langgraph",
                 "retrieval_k": config.retrieval_k,
+                "low_confidence_threshold": config.low_confidence_threshold,
+                "high_confidence_threshold": config.high_confidence_threshold,
                 "llm_provider": config.llm_provider,
                 "llm_model": config.llm_model or "extractive-fallback",
                 "embedding_provider": config.embedding_provider,
                 "embedding_model": config.embedding_model or "local-hash",
                 "package_version": __version__,
+                **{
+                    f"config.{key}": value if value is not None else "none"
+                    for key, value in reproducibility["config"].items()
+                },
+                **reproducibility_params,
             }
         )
         mlflow.set_tags(
@@ -81,8 +95,17 @@ def log_model() -> str:
                 "task": "question-answering",
                 "domain": "automotive-ecu",
                 "package": "ecu-assistant",
+                "git_sha": reproducibility_params["git_sha"],
+                "document_hash": reproducibility_params["document_hash"],
+                "evaluation_set_version": reproducibility_params[
+                    "evaluation_set_version"
+                ],
             }
         )
+        mlflow.log_dict(reproducibility, "reproducibility.json")
+        mlflow.log_dict(reproducibility["config"], "config.json")
+        mlflow.log_dict(reproducibility["documents"], "document_manifest.json")
+        mlflow.log_dict(reproducibility["evaluation_set"], "evaluation_set.json")
         arguments = {
             "python_model": ECUEngineeringAssistantModel(config),
             "artifacts": {"docs": str(package_root / "data" / "documents")},
