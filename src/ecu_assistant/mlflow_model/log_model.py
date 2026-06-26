@@ -115,6 +115,7 @@ def log_model() -> str:
             "pip_requirements": [
                 "langchain-core>=0.3,<2",
                 "langgraph>=0.2,<2",
+                "mlflow>=2.13,<4",
                 "numpy>=1.26,<3",
                 "pandas>=2,<3",
                 *_provider_requirements(config),
